@@ -1,0 +1,550 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>lite-inp 1.0.0 -- zero-GC INP attribution</title>
+    <style>
+        :root {
+            --bg: #05100a;
+            --bg: oklch(0.16 0.03 165);
+            --panel: #0a1a10;
+            --panel: oklch(0.21 0.035 165);
+            --grid: #1f6f4529;
+            --grid: oklch(0.55 0.11 165 / 0.16);
+            --ink: #7df7c8;
+            --ink: oklch(0.90 0.15 168);
+            --ink-dim: #3f9c78;
+            --ink-dim: oklch(0.68 0.09 168);
+            --ink-faint: #2a6f56;
+            --ink-faint: oklch(0.52 0.06 168);
+            --warn: #ffb454;
+            --warn: oklch(0.82 0.15 68);
+            --bad: #ff6b6b;
+            --bad: oklch(0.68 0.18 25);
+            --good: #7df7c8;
+            --good: oklch(0.90 0.15 168);
+            --edge: #2f5a4e80;
+            --edge: oklch(0.42 0.06 168 / 0.5);
+            --r: 0.5rem;
+            --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html, body {
+            margin: 0;
+        }
+
+        body {
+            background: linear-gradient(transparent 0 calc(1.5rem - 1px), var(--grid) calc(1.5rem - 1px) 1.5rem),
+            linear-gradient(90deg, transparent 0 calc(1.5rem - 1px), var(--grid) calc(1.5rem - 1px) 1.5rem),
+            var(--bg);
+            background-size: 1.5rem 1.5rem;
+            color: var(--ink);
+            font-family: var(--mono);
+            font-size: 0.9rem;
+            line-height: 1.5;
+            padding: 1.5rem;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .wrap {
+            max-width: 62rem;
+            margin: 0 auto;
+        }
+
+        header {
+            border-bottom: 1px solid var(--edge);
+            padding-bottom: 0.9rem;
+            margin-bottom: 1.2rem;
+        }
+
+        h1 {
+            font-size: 1.15rem;
+            margin: 0 0 0.2rem;
+        }
+
+        h1 .v {
+            color: var(--ink-faint);
+            font-weight: 400;
+        }
+
+        .sub {
+            color: var(--ink-dim);
+            font-size: 0.82rem;
+            max-width: 48rem;
+        }
+
+        .cols {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+
+        @media (max-width: 48rem) {
+            .cols {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .card {
+            background: var(--panel);
+            border: 1px solid var(--edge);
+            border-radius: var(--r);
+            padding: 0.9rem 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .card h2 {
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            color: var(--ink-faint);
+            margin: 0 0 0.7rem;
+            font-weight: 600;
+        }
+
+        button {
+            font: inherit;
+            color: var(--bg);
+            background: var(--ink);
+            border: 1px solid var(--ink);
+            border-radius: var(--r);
+            padding: 0.5rem 1rem;
+            cursor: pointer;
+            font-size: 0.82rem;
+            margin: 0.3rem;
+        }
+
+        @media (hover: hover) {
+            button:hover {
+                background: var(--ink-dim);
+                border-color: var(--ink-dim);
+            }
+        }
+
+        .btn-slow {
+            background: var(--warn);
+            border-color: var(--warn);
+        }
+
+        .btn-bad {
+            background: var(--bad);
+            border-color: var(--bad);
+        }
+
+        .inp-display {
+            font-size: 2rem;
+            font-weight: 700;
+            margin: 0.5rem 0;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .inp-good {
+            color: var(--good);
+        }
+
+        .inp-warn {
+            color: var(--warn);
+        }
+
+        .inp-bad {
+            color: var(--bad);
+        }
+
+        .phase-bar {
+            display: flex;
+            height: 1.5rem;
+            border-radius: 3px;
+            overflow: hidden;
+            margin: 0.5rem 0;
+        }
+
+        .phase-bar div {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.65rem;
+            color: var(--bg);
+            font-weight: 600;
+        }
+
+        .phase-input {
+            background: #ff9f7f;
+            background: oklch(0.78 0.14 40);
+        }
+
+        .phase-proc {
+            background: #4ecdc4;
+            background: oklch(0.80 0.12 190);
+        }
+
+        .phase-pres {
+            background: #bb86fc;
+            background: oklch(0.73 0.17 300);
+        }
+
+        .detail {
+            font-size: 0.76rem;
+            color: var(--ink-dim);
+            line-height: 1.7;
+        }
+
+        .detail b {
+            color: var(--ink);
+            font-weight: 600;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.74rem;
+            font-variant-numeric: tabular-nums;
+        }
+
+        th {
+            text-align: left;
+            color: var(--ink-faint);
+            font-weight: 600;
+            font-size: 0.66rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            padding: 0.2rem 0.4rem 0.2rem 0;
+        }
+
+        td {
+            padding: 0.2rem 0.4rem 0.2rem 0;
+            border-top: 1px solid var(--edge);
+            color: var(--ink-dim);
+        }
+
+        .note {
+            color: var(--ink-faint);
+            font-size: 0.72rem;
+            margin-top: 0.8rem;
+        }
+
+        code {
+            color: var(--ink);
+            background: color-mix(in oklab, var(--ink) 10%, transparent);
+            padding: 0 0.25rem;
+            border-radius: 3px;
+        }
+
+        .unsupported {
+            color: var(--warn);
+            font-size: 0.82rem;
+            padding: 1rem;
+            border: 1px dashed var(--warn);
+            border-radius: var(--r);
+        }
+
+        /* utilities */
+        .hidden {
+            display: none;
+        }
+
+        .btn-wide {
+            width: 100%;
+        }
+
+        .phase-bar > div {
+            flex: 1;
+        }
+
+        /* default before JS updates flex per-phase */
+        .row-toolbar {
+            margin-top: 0.8rem;
+        }
+
+        .scripts-list {
+            margin-top: 0.4rem;
+        }
+
+        .scripts-list div {
+            padding-left: 1rem;
+        }
+
+        .scripts-list .src {
+            color: var(--ink-faint);
+            font-size: 0.70rem;
+            padding-left: 2rem;
+        }
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <header>
+        <h1>lite-inp <span class="v">1.0.0 -- zero-GC INP attribution</span></h1>
+        <p class="sub">
+            Click the buttons below to generate interactions with different processing costs.
+            The observer writes to preallocated typed arrays -- no object creation per event.
+            The INP value and phase bar update immediately from the observer callback (hot path,
+            zero-alloc); LoAF script attribution and the interaction log refresh every second
+            (cold path). Requires Chrome 123+ for LoAF attribution;
+            Event Timing works in Chrome 96+ / Firefox 144+.
+        </p>
+    </header>
+
+    <div id="unsupported" class="unsupported hidden">
+        Event Timing API not supported in this browser. Open in Chrome or Firefox 144+.
+    </div>
+
+    <div class="cols">
+        <div>
+            <div class="card">
+                <h2>Generate interactions</h2>
+                <p class="detail">Each button blocks the main thread for the labeled duration, simulating real handler
+                    work.</p>
+                <div>
+                    <button id="fast">Fast (10ms)</button>
+                    <button id="medium" class="btn-slow">Medium (120ms)</button>
+                    <button id="slow" class="btn-bad">Slow (350ms)</button>
+                </div>
+                <div class="row-toolbar">
+                    <button id="keyTarget" class="btn-wide">Type here (focus + press any key)</button>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Current INP</h2>
+                <div class="inp-display" id="inpValue">-- ms</div>
+                <div class="phase-bar" id="phaseBar">
+                    <div class="phase-input" id="phaseInputDiv">input</div>
+                    <div class="phase-proc" id="phaseProcDiv">proc</div>
+                    <div class="phase-pres" id="phasePresDiv">pres</div>
+                </div>
+                <div class="detail" id="inpDetail">
+                    Click a button above to record an interaction.
+                </div>
+            </div>
+        </div>
+
+        <div>
+            <div class="card">
+                <h2>Interaction log</h2>
+                <table>
+                    <thead>
+                    <tr>
+                        <th>event</th>
+                        <th>dur</th>
+                        <th>input</th>
+                        <th>proc</th>
+                        <th>pres</th>
+                    </tr>
+                    </thead>
+                    <tbody id="interactionRows"></tbody>
+                </table>
+                <p class="note" id="countNote">interactions: 0</p>
+            </div>
+
+            <div class="card">
+                <h2>LoAF attribution</h2>
+                <div class="detail" id="loafDetail">
+                    Waiting for a long animation frame...
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "@zakkster/lite-inp": "../Inp.js"
+  }
+}
+
+</script>
+<script type="module">
+    import {createInpObserver} from '@zakkster/lite-inp';
+
+    // -- Cached DOM refs (module-init, never per-event) --
+    const $inpValue = document.getElementById('inpValue');
+    const $phaseInputDiv = document.getElementById('phaseInputDiv');
+    const $phaseProcDiv = document.getElementById('phaseProcDiv');
+    const $phasePresDiv = document.getElementById('phasePresDiv');
+    const $inpDetail = document.getElementById('inpDetail');
+    const $interactionRows = document.getElementById('interactionRows');
+    const $countNote = document.getElementById('countNote');
+    const $loafDetail = document.getElementById('loafDetail');
+    const $unsupported = document.getElementById('unsupported');
+
+    // -- Preallocated row pool for the interaction table (max 12 rows).
+    //    Each row has 5 cached cells; we mutate .textContent and toggle .hidden
+    //    rather than rebuilding innerHTML (which parses HTML and allocates).
+    const ROW_POOL_SIZE = 12;
+    const rowPool = new Array(ROW_POOL_SIZE);
+    for (let i = 0; i < ROW_POOL_SIZE; i++) {
+        const tr = document.createElement('tr');
+        const cells = new Array(5);
+        for (let c = 0; c < 5; c++) {
+            const td = document.createElement('td');
+            tr.appendChild(td);
+            cells[c] = td;
+        }
+        tr.classList.add('hidden');
+        $interactionRows.appendChild(tr);
+        rowPool[i] = {tr: tr, cells: cells};
+    }
+
+    // -- Burn helper (blocks the main thread) --
+    function burn(ms) {
+        const end = performance.now() + ms;
+        let x = 0;
+        while (performance.now() < end) {
+            x += Math.sqrt(x + 1) * 1.0001;
+        }
+        return x;
+    }
+
+    // -- Interaction buttons -- three closures created ONCE at init.
+    document.getElementById('fast').addEventListener('click', () => burn(10));
+    document.getElementById('medium').addEventListener('click', () => burn(120));
+    document.getElementById('slow').addEventListener('click', () => burn(350));
+    document.getElementById('keyTarget').addEventListener('keydown', () => burn(80));
+
+    // -- Observer --
+    // onUpdate is called from the library's hot path (Event Timing observer
+    // callback). The reusable entry has attribution === null by design: the
+    // library skips attribution allocation to preserve its zero-GC promise.
+    // We render primitives here and let the setInterval-driven cold path
+    // refresh attribution details every second.
+    const obs = createInpObserver({
+        durationThreshold: 16,
+        onUpdate: renderPrimitives
+    });
+
+    if (!obs.supported) {
+        $unsupported.classList.remove('hidden');
+    }
+
+    // Precomputed className strings -- avoid a ConsString allocation on every
+    // interaction. V8 interns literals but the concat 'inp-display '+rating
+    // produces a fresh string each time.
+    const CLASS_GOOD = 'inp-display inp-good';
+    const CLASS_WARN = 'inp-display inp-warn';
+    const CLASS_BAD = 'inp-display inp-bad';
+
+    function ratingClass(dur) {
+        if (dur <= 200) return CLASS_GOOD;
+        if (dur <= 500) return CLASS_WARN;
+        return CLASS_BAD;
+    }
+
+    // -- HOT PATH -- fires on every new-worst interaction.
+    //    Zero innerHTML, zero HTML parsing. String allocation from Math.round is
+    //    unavoidable when assigning to textContent, but that's the minimum cost
+    //    of showing a number.
+    let lastValueClass = '';
+
+    function renderPrimitives(entry) {
+        const dur = entry.duration | 0;
+        $inpValue.textContent = dur + ' ms';
+        const cls = ratingClass(entry.duration);
+        if (cls !== lastValueClass) {
+            $inpValue.className = cls;
+            lastValueClass = cls;
+        }
+
+        // Phase bar -- three cached divs, mutate flex + textContent in place.
+        const inputMs = entry.inputDelay | 0;
+        const procMs = entry.processingTime | 0;
+        const presMs = entry.presentationDelay | 0;
+        // Flex values scale relative to total; floor at 1 so a zero-phase div is
+        // still labelable.
+        const total = entry.inputDelay + entry.processingTime + entry.presentationDelay;
+        if (total > 0) {
+            $phaseInputDiv.style.flex = Math.max(1, (entry.inputDelay / total) * 100);
+            $phaseProcDiv.style.flex = Math.max(1, (entry.processingTime / total) * 100);
+            $phasePresDiv.style.flex = Math.max(1, (entry.presentationDelay / total) * 100);
+        }
+        $phaseInputDiv.textContent = inputMs;
+        $phaseProcDiv.textContent = procMs;
+        $phasePresDiv.textContent = presMs;
+
+        // Detail line -- single textContent update, one string alloc.
+        $inpDetail.textContent =
+            'event: ' + entry.eventType +
+            '   input ' + inputMs + 'ms' +
+            '   proc ' + procMs + 'ms' +
+            '   pres ' + presMs + 'ms';
+    }
+
+    // -- COLD PATH -- 1000ms refresh: interaction log + LoAF panel + INP with attribution.
+    setInterval(function () {
+        // Interaction log (up to ROW_POOL_SIZE rows, mutating cached cells).
+        const interactions = obs.getInteractions();
+        $countNote.textContent = 'interactions: ' + obs.interactionCount;
+        const shown = Math.min(interactions.length, ROW_POOL_SIZE);
+        for (let i = 0; i < shown; i++) {
+            const ix = interactions[i];
+            const row = rowPool[i];
+            row.cells[0].textContent = ix.eventType;
+            row.cells[1].textContent = Math.round(ix.duration);
+            row.cells[2].textContent = Math.round(ix.inputDelay);
+            row.cells[3].textContent = Math.round(ix.processingTime);
+            row.cells[4].textContent = Math.round(ix.presentationDelay);
+            row.tr.classList.remove('hidden');
+        }
+        for (let i = shown; i < ROW_POOL_SIZE; i++) {
+            rowPool[i].tr.classList.add('hidden');
+        }
+
+        // INP with attribution (cold path -- library allocates the entry here).
+        const inp = obs.getINP();
+        if (inp) {
+            renderPrimitives(inp);
+            renderAttribution(inp.attribution);
+        }
+
+        // LoAF panel.
+        const loafs = obs.getLoafs();
+        renderLoafPanel(loafs);
+    }, 1000);
+
+    function renderAttribution(attr) {
+        if (!attr || attr.scripts.length === 0) return;
+        // Rewrite the detail line to include attribution. This is cold-path
+        // (1s cadence), so a single innerHTML update is acceptable.
+        // We build the string with array-join to keep the allocation footprint
+        // predictable (one array + one string).
+        const parts = [$inpDetail.textContent, '\nLoAF scripts:'];
+        for (let i = 0; i < attr.scripts.length; i++) {
+            const s = attr.scripts[i];
+            parts.push('\n  ' + (s.invoker || '(unknown)') +
+                (s.sourceFunctionName ? ' / ' + s.sourceFunctionName : '') +
+                ' (' + Math.round(s.duration) + 'ms)');
+            if (s.sourceURL) {
+                const file = s.sourceURL.substring(s.sourceURL.lastIndexOf('/') + 1);
+                parts.push('\n    ' + file);
+            }
+        }
+        $inpDetail.textContent = parts.join('');
+    }
+
+    function renderLoafPanel(loafs) {
+        if (loafs.length === 0) return;
+        const latest = loafs[loafs.length - 1];
+        const parts = [
+            'latest LoAF: ' + Math.round(latest.duration) + 'ms',
+            ' (blocking: ' + Math.round(latest.blockingDuration) + 'ms)'
+        ];
+        if (latest.scripts.length > 0) {
+            parts.push('\nscripts:');
+            for (let i = 0; i < latest.scripts.length; i++) {
+                const s = latest.scripts[i];
+                parts.push('\n  ' + (s.invoker || '(anon)') +
+                    (s.sourceFunctionName ? ' / ' + s.sourceFunctionName : '') +
+                    ' (' + Math.round(s.duration) + 'ms)');
+            }
+        }
+        parts.push('\ntotal LoAFs captured: ' + obs.loafCount);
+        $loafDetail.textContent = parts.join('');
+    }
+</script>
+</body>
+</html>

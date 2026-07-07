@@ -1,0 +1,45 @@
+# @zakkster/lite-inp
+
+Zero-GC INP attribution via Event Timing API + Long Animation Frames.
+
+## What it does
+
+Observes PerformanceEventTiming entries (interactions) and
+PerformanceLongAnimationFrameTiming entries (LoAF) using PerformanceObserver.
+Writes to preallocated typed-array ring buffers -- zero heap allocation
+per event in the observer callback.
+
+Computes INP (Interaction to Next Paint) as the p98 worst interaction
+duration, with phase breakdown (input delay, processing time, presentation
+delay) and LoAF script attribution (invoker, sourceURL, sourceFunctionName).
+
+## API
+
+createInpObserver(options?) -- start observing.
+  options: interactionCap, loafCap, durationThreshold, onUpdate.
+
+obs.getINP() -- current INP entry with attribution (cold path, allocates).
+obs.getInteractions() -- all interactions sorted by duration.
+obs.getLoafs() -- recent LoAF entries with scripts.
+obs.destroy() -- disconnect observers.
+obs.currentINP -- current worst duration (number, no alloc).
+obs.supported / obs.loafSupported -- feature detection.
+
+## Zero-GC design
+
+Observer callbacks write to Float64Array/Int32Array SoA columns.
+Event types interned to integer IDs. Map<interactionId, slot> is the
+only per-interaction allocation (user-initiated, not per-frame).
+
+onUpdate reuses a single entry object. Attribution is null on the hot
+path (populating it means walking the LoAF ring and allocating a scripts
+array) -- call getINP() from inside onUpdate or on any cadence you
+prefer if you need attribution for the current INP. This split is
+deliberate: measuring INP should not itself cause GC pauses that
+perturb what you are measuring.
+
+## Browser support
+
+Event Timing (interactionId): Chrome 96+, Firefox 144+.
+LoAF (script attribution): Chrome 123+.
+Feature-detected; graceful degradation.
