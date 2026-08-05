@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { VERSION } from '../Inp.js';
+
+const PKG_VERSION = JSON.parse(
+    readFileSync(new URL('../package.json', import.meta.url))
+).version;
 
 // The observer callbacks use browser-only PerformanceObserver, so we can't
 // test them in node:test. What we CAN test: the module loads, exports the
@@ -8,8 +13,8 @@ import { VERSION } from '../Inp.js';
 // computation, LoAF attribution) is tested via the interactive demo in a
 // real browser.
 
-test('VERSION is set', () => {
-    assert.equal(VERSION, '1.0.0');
+test('VERSION is set and matches package.json', () => {
+    assert.equal(VERSION, PKG_VERSION);
 });
 
 test('createInpObserver is exported and callable', async () => {

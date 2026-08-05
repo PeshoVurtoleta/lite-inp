@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.2] - 2026-08-05
+
+### Fixed
+
+- Synced the exported `VERSION` constant to the package version. The 1.0.1
+  release was bumped manually, bypassing the version-sync step, so it shipped
+  with `VERSION === '1.0.0'` at runtime. No other code changed; the published
+  tarball is otherwise identical to 1.0.1.
+
 ## [1.0.1] - 2026-08-05
 
 ### Fixed

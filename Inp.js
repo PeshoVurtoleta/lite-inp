@@ -7,7 +7,7 @@
 // Copyright (c) 2026 Zahary Shinikchiev <shinikchiev@yahoo.com>
 // MIT License
 
-export const VERSION = '1.0.0';
+export const VERSION = '1.0.2';
 
 // ---------------------------------------------------------------------------
 // Helpers
