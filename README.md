@@ -122,7 +122,9 @@ The library feature-detects both APIs. If Event Timing is unavailable, `supporte
 
 ## INP calculation
 
-INP is the p98 of all interactions' max durations. For pages with fewer than 50 interactions, it's the worst. The library uses `performance.interactionCount` (when available) for the p98 skip count, matching the spec definition.
+INP is the p98 of the page's interactions: the worst interaction after skipping the `floor(interactionCount / 50)` slowest, or simply the worst for pages with fewer than 50 interactions. `performance.interactionCount` (when available) supplies the skip count, matching the spec definition.
+
+Because INP is a *page-lifetime* percentile, the library maintains an independent longest-N list -- the 10 longest interactions seen since page load -- separate from the `interactionCap` recency ring. The percentile is computed from that list, so INP stays correct on long-lived pages (SPAs, dashboards) even after thousands of interactions have cycled through and been evicted from the ring. The recency ring is retained for `getInteractions()` detail. The longest-N list is maintained allocation-free on the hot path, and matches the estimator used by CrUX and `web-vitals`.
 
 ## License
 
