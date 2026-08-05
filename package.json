@@ -25,7 +25,13 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test"
+    "test": "node --test test/*.test.mjs test/torture.mjs",
+    "test:node": "node --test test/*.test.mjs test/torture.mjs",
+    "test:torture": "node --expose-gc test/torture.mjs",
+    "test:gc-longest": "node --expose-gc test/gc.longest.mjs",
+    "test:browser": "node --test test/browser/oracle.test.mjs",
+    "test:alloc": "node test/browser/alloc.cdp.mjs",
+    "verify": "npm run test:node && npm run test:torture && npm run test:gc-longest && npm run test:browser && npm run test:alloc"
   },
   "keywords": [
     "inp",
@@ -63,6 +69,8 @@
   "devDependencies": {
     "@zakkster/lite-gc-profiler": "^1.15.0",
     "@zakkster/lite-leak": "^1.8.1",
-    "@zakkster/lite-signal": "^1.5.0-rc.1"
+    "@zakkster/lite-signal": ">=1.5.0-rc.1",
+    "playwright": "^1.62.1",
+    "web-vitals": "^4.2.4"
   }
 }
