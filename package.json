@@ -59,5 +59,10 @@
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "@zakkster/lite-gc-profiler": "^1.15.0",
+    "@zakkster/lite-leak": "^1.8.1",
+    "@zakkster/lite-signal": "^1.5.0-rc.1"
   }
 }

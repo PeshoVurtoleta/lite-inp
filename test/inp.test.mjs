@@ -60,7 +60,26 @@ test('getLoafs returns empty array when no LoAFs', async () => {
 test('destroy is idempotent', async () => {
     const { createInpObserver } = await import('../Inp.js');
     const obs = createInpObserver();
-    assert.doesNotThrow(() => { obs.destroy(); obs.destroy(); });
+    // The meaningful assertion this env can make: destroy() never throws,
+    // called any number of times.
+    assert.doesNotThrow(() => { obs.destroy(); obs.destroy(); obs.destroy(); });
+    // NOTE on what the checks below do NOT prove: Node has no
+    // PerformanceObserver, so `supported === false` and no interaction/LoAF
+    // state is ever populated in this file -- getINP() === null,
+    // getInteractions()/getLoafs() === [], and interactionCount === 0 hold
+    // BEFORE destroy() is even called, let alone after. Asserting them here
+    // again post-destroy is tautological and would pass even if the IN-06
+    // reset in destroy() were deleted entirely. They are kept only as a
+    // smoke check that the no-support code path still returns the documented
+    // "no data" shape after multiple destroy() calls, not as reset proof.
+    // The actual reset proof -- state populated via a mock
+    // PerformanceObserver, verified non-empty before destroy() and reset
+    // after -- lives in test/inp.boundary.test.mjs ("duplicate dispose ...
+    // proven against POPULATED state").
+    assert.equal(obs.getINP(), null);
+    assert.equal(obs.getInteractions().length, 0);
+    assert.equal(obs.getLoafs().length, 0);
+    assert.equal(obs.interactionCount, 0);
 });
 
 test('options are accepted without error', async () => {

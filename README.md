@@ -4,7 +4,7 @@
 ![Zero-GC](https://img.shields.io/badge/Zero--GC-Hot%20path-00C853?style=for-the-badge&logo=leaf&logoColor=white)
 [![sponsor](https://img.shields.io/badge/sponsor-PeshoVurtoleta-ea4aaa.svg?logo=github)](https://github.com/sponsors/PeshoVurtoleta)
 [![npm bundle size](https://img.shields.io/bundlephobia/minzip/@zakkster/lite-inp?style=for-the-badge)](https://bundlephobia.com/result?p=@zakkster/lite-inp)
-[![npm downloads](https://img.shields.io/npm/dm/@zakkster/lite-inp?style=for-the-badge&color=blue)](https://www.npmjs.com/package/@zakkster/lite-cleanup)
+[![npm downloads](https://img.shields.io/npm/dm/@zakkster/lite-inp?style=for-the-badge&color=blue)](https://www.npmjs.com/package/@zakkster/lite-inp)
 [![npm total downloads](https://img.shields.io/npm/dt/@zakkster/lite-inp?style=for-the-badge&color=blue)](https://www.npmjs.com/package/@zakkster/lite-inp)
 ![TypeScript](https://img.shields.io/badge/TypeScript-Types-informational)
 ![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)
@@ -81,7 +81,7 @@ Cold-path methods (`getINP()`, `getInteractions()`, `getLoafs()`) allocate resul
 | `getINP()` | Current INP entry with phase breakdown + LoAF attribution |
 | `getInteractions()` | All tracked interactions, sorted by duration descending |
 | `getLoafs()` | Recent LoAF entries with script attribution |
-| `destroy()` | Disconnect observers, clear state |
+| `destroy()` | Disconnect observers and reset all state; getters return null/empty afterward |
 | `interactionCount` | Number of unique interactions tracked |
 | `currentINP` | Current worst duration (ms) |
 | `supported` | True if Event Timing API is available |

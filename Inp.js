@@ -21,9 +21,9 @@ function supports(type) {
         PerformanceObserver.supportedEntryTypes.includes(type);
 }
 
-// Hoisted so we don't allocate a comparator closure per LoAF entry that has
-// more than SCRIPTS_PER_LOAF scripts.
-function scriptDurDesc(a, b) { return (b.duration || 0) - (a.duration || 0); }
+// Hoisted so we don't allocate a comparator closure per sort. Null-safe body
+// serves both the LoAF script sort and the getInteractions result sort.
+function byDurationDesc(a, b) { return (b.duration || 0) - (a.duration || 0); }
 
 // ---------------------------------------------------------------------------
 // createInpObserver -- the public API
@@ -105,12 +105,31 @@ export function createInpObserver(options) {
     // large LoAF; the browser's own scripts array is never mutated.
     let scratchScripts = null;
 
+    // -- longest-N SoA (page-lifetime, sorted by duration DESC) --
+    // INP is a page-lifetime percentile, but the recency ring above evicts
+    // early interactions once it wraps -- so the worst interaction that the
+    // p98 skip lands on may already be garbage. This independent list keeps
+    // its OWN copies of the 10 longest interactions ever seen, so computeINP
+    // never depends on a live ring slot. 10 slots suffice: the web-vitals
+    // estimator caps skip at 9 (floor(count/50)) below ~500 interactions,
+    // beyond which estimator error dominates anyway.
+    const LN_CAP = 10;
+    const lnDuration = new Float64Array(LN_CAP);
+    const lnStartTime = new Float64Array(LN_CAP);
+    const lnProcessingStart = new Float64Array(LN_CAP);
+    const lnProcessingEnd = new Float64Array(LN_CAP);
+    const lnInputDelay = new Float64Array(LN_CAP);
+    const lnProcessingTime = new Float64Array(LN_CAP);
+    const lnPresentationDelay = new Float64Array(LN_CAP);
+    const lnEventType = new Int32Array(LN_CAP);       // interned tag id
+    const lnInteractionId = new Float64Array(LN_CAP); // ids can be large
+    let lnCount = 0;
+
     // -- INP tracking --
     // INP = p98 of all interactions' max durations.
     // For < 50 interactions, it's the worst.
     // We track the current worst for the onUpdate callback.
     let currentInpDuration = 0;
-    let currentInpSlot = -1;
 
     // -- reusable entry object for onUpdate (zero alloc per callback) --
     const reusableEntry = {
@@ -162,12 +181,18 @@ export function createInpObserver(options) {
                 iProcessingTime[slot] = processingTime;
                 iPresentationDelay[slot] = presentationDelay > 0 ? presentationDelay : 0;
                 iEventType[slot] = internEventType(e.name);
+
+                // The recency ring may evict this interaction later, but INP is
+                // a page-lifetime percentile -- so maintain the independent
+                // longest-N list now, while the raised duration is fresh. Runs
+                // only when the duration actually rose (this block), never per
+                // event. Zero allocation: hand-rolled O(LN_CAP) shifts.
+                maintainLongest(slot);
             }
 
             // Update current INP candidate
             if (dur > currentInpDuration) {
                 currentInpDuration = dur;
-                currentInpSlot = slot;
                 if (onUpdate !== null) {
                     // Hot path: primitives only, no allocation. Attribution is
                     // a cold-path concern (call getINP() when reporting) so the
@@ -180,6 +205,72 @@ export function createInpObserver(options) {
                     onUpdate(reusableEntry);
                 }
             }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Longest-N maintenance -- HOT PATH (runs inside the event observer)
+    // -----------------------------------------------------------------------
+    // All writes go into preallocated arrays. No push, no closure sort, no
+    // object literals -- hand-rolled O(LN_CAP) shifts only.
+
+    function lnCopyFromSlot(pos, slot) {
+        lnDuration[pos] = iDuration[slot];
+        lnStartTime[pos] = iStartTime[slot];
+        lnProcessingStart[pos] = iProcessingStart[slot];
+        lnProcessingEnd[pos] = iProcessingEnd[slot];
+        lnInputDelay[pos] = iInputDelay[slot];
+        lnProcessingTime[pos] = iProcessingTime[slot];
+        lnPresentationDelay[pos] = iPresentationDelay[slot];
+        lnEventType[pos] = iEventType[slot];
+        lnInteractionId[pos] = iInteractionId[slot];
+    }
+
+    function lnSwap(a, b) {
+        let t;
+        t = lnDuration[a]; lnDuration[a] = lnDuration[b]; lnDuration[b] = t;
+        t = lnStartTime[a]; lnStartTime[a] = lnStartTime[b]; lnStartTime[b] = t;
+        t = lnProcessingStart[a]; lnProcessingStart[a] = lnProcessingStart[b]; lnProcessingStart[b] = t;
+        t = lnProcessingEnd[a]; lnProcessingEnd[a] = lnProcessingEnd[b]; lnProcessingEnd[b] = t;
+        t = lnInputDelay[a]; lnInputDelay[a] = lnInputDelay[b]; lnInputDelay[b] = t;
+        t = lnProcessingTime[a]; lnProcessingTime[a] = lnProcessingTime[b]; lnProcessingTime[b] = t;
+        t = lnPresentationDelay[a]; lnPresentationDelay[a] = lnPresentationDelay[b]; lnPresentationDelay[b] = t;
+        t = lnEventType[a]; lnEventType[a] = lnEventType[b]; lnEventType[b] = t;
+        t = lnInteractionId[a]; lnInteractionId[a] = lnInteractionId[b]; lnInteractionId[b] = t;
+    }
+
+    // Move entry at pos toward index 0 while it is longer than its predecessor.
+    // Duration only ever rises for an existing entry, and a fresh insert lands
+    // at the tail, so a single upward bubble always restores DESC order.
+    function lnBubbleUp(pos) {
+        while (pos > 0 && lnDuration[pos] > lnDuration[pos - 1]) {
+            lnSwap(pos, pos - 1);
+            pos--;
+        }
+    }
+
+    // Called only when iDuration[slot] just rose. Dedup by interactionId:
+    // the same interaction must never occupy two longest-N slots.
+    function maintainLongest(slot) {
+        const id = iInteractionId[slot];
+        const dur = iDuration[slot];
+        for (let k = 0; k < lnCount; k++) {
+            if (lnInteractionId[k] === id) {
+                // Already present -- refresh its stored copy and re-sort.
+                lnCopyFromSlot(k, slot);
+                lnBubbleUp(k);
+                return;
+            }
+        }
+        // Absent: insert if there is room, else displace the smallest (last)
+        // entry only if this interaction is strictly longer than it.
+        if (lnCount < LN_CAP) {
+            lnCopyFromSlot(lnCount, slot);
+            lnBubbleUp(lnCount);
+            lnCount++;
+        } else if (dur > lnDuration[LN_CAP - 1]) {
+            lnCopyFromSlot(LN_CAP - 1, slot);
+            lnBubbleUp(LN_CAP - 1);
         }
     }
 
@@ -216,7 +307,7 @@ export function createInpObserver(options) {
                     // Truncate to actual populated length before sort so stale
                     // tail refs from a previous larger LoAF don't contaminate.
                     scratchScripts.length = scripts.length;
-                    scratchScripts.sort(scriptDurDesc);
+                    scratchScripts.sort(byDurationDesc);
                     sorted = scratchScripts;
                 }
                 const limit = sorted.length < SCRIPTS_PER_LOAF ? sorted.length : SCRIPTS_PER_LOAF;
@@ -317,12 +408,21 @@ export function createInpObserver(options) {
         target.interactionId = iInteractionId[slot];
     }
 
-    // Cold path: full entry including LoAF attribution. Called by getINP()
-    // and from the demo's on-demand refresh -- allocates by design.
-    function fillEntry(target, slot) {
-        fillEntryPrimitives(target, slot);
-        const endTime = iStartTime[slot] + iDuration[slot];
-        const loafSlot = findLoafForInteraction(iStartTime[slot], endTime);
+    // Cold path: full entry including LoAF attribution, read from the
+    // longest-N SoA (which holds its own copies -- never a live ring slot).
+    // Called by getINP(); allocates the returned entry by design.
+    function fillEntryFromLongest(target, idx) {
+        target.duration = lnDuration[idx];
+        target.inputDelay = lnInputDelay[idx];
+        target.processingTime = lnProcessingTime[idx];
+        target.presentationDelay = lnPresentationDelay[idx];
+        target.startTime = lnStartTime[idx];
+        target.eventType = eventTypes[lnEventType[idx]] || '';
+        target.interactionId = lnInteractionId[idx];
+        // LoAF attribution is still correlated at getINP() time from the stored
+        // startTime/duration window -- so cold-path attribution keeps working.
+        const endTime = lnStartTime[idx] + lnDuration[idx];
+        const loafSlot = findLoafForInteraction(lnStartTime[idx], endTime);
         target.attribution = buildAttribution(loafSlot);
     }
 
@@ -331,38 +431,27 @@ export function createInpObserver(options) {
     // -----------------------------------------------------------------------
 
     function computeINP() {
-        const n = Math.min(iCount, iCap);
-        if (n === 0) return null;
+        // Fail closed: no interactions -> no INP (null is not zero).
+        if (lnCount === 0) return null;
 
-        // Collect all interaction durations into a sortable array.
-        // This allocates -- it's a cold path called on demand.
-        const durations = new Float64Array(n);
-        const slots = new Int32Array(n);
-        for (let k = 0; k < n; k++) {
-            // Walk the live slots
-            const slot = iCount <= iCap ? k : ((iCount - iCap + k) & iMask);
-            durations[k] = iDuration[slot];
-            slots[k] = slot;
-        }
-
-        // Sort descending
-        const indices = Array.from({ length: n }, function (_, i) { return i; });
-        indices.sort(function (a, b) { return durations[b] - durations[a]; });
-
-        // p98: skip floor(n/50) worst interactions
-        const interactionCount = typeof performance !== 'undefined' && performance.interactionCount
+        // INP is a PAGE-LIFETIME percentile. The skip must use the true
+        // lifetime unique-interaction count, not the capped recency window:
+        // performance.interactionCount when available, else raw iCount (which
+        // only ever increments -- the capped `n` would under-count skips and
+        // reintroduce IN-01).
+        const lifetimeCount = typeof performance !== 'undefined' && performance.interactionCount
             ? performance.interactionCount
-            : n;
-        const skip = Math.floor(interactionCount / 50);
-        const targetIdx = Math.min(skip, n - 1);
-        const inpIdx = indices[targetIdx];
-        const inpSlot = slots[inpIdx];
+            : iCount;
+        const skip = Math.floor(lifetimeCount / 50);
+        const targetIdx = skip < lnCount ? skip : lnCount - 1;
 
+        // Read from the longest-N list -- no durations/slots/indices arrays,
+        // no sort. Only the returned entry (+ attribution) allocates.
         const entry = {
             duration: 0, inputDelay: 0, processingTime: 0, presentationDelay: 0,
             startTime: 0, eventType: '', interactionId: 0, attribution: null
         };
-        fillEntry(entry, inpSlot);
+        fillEntryFromLongest(entry, targetIdx);
         return entry;
     }
 
@@ -390,7 +479,7 @@ export function createInpObserver(options) {
             };
             result.push(entry);
         }
-        result.sort(function (a, b) { return b.duration - a.duration; });
+        result.sort(byDurationDesc);
         return result;
     }
 
@@ -424,7 +513,15 @@ export function createInpObserver(options) {
     function destroy() {
         if (eventObs) { eventObs.disconnect(); eventObs = null; }
         if (loafObs) { loafObs.disconnect(); loafObs = null; }
+        // Fail closed: reset all counters so post-destroy getters return
+        // null/empty rather than stale data. Observers are nulled above, so
+        // nothing re-observes; the interning arrays are harmless to keep.
         idToSlot.clear();
+        iCount = 0;
+        lnCount = 0;
+        currentInpDuration = 0;
+        lCount = 0;
+        lHead = 0;
     }
 
     return {
