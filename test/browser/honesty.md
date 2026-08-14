@@ -37,6 +37,41 @@ string work.** The longest-N list and the `onUpdate` entry are both zero-alloc.
 the documented floor by more than half a megabyte, while the honest run stays
 under the floor. A gate that could not catch that control would not be a gate.
 
+## Lifecycle scenarios (1.1.0): synthetic-first, stated plainly
+
+The `bfcache-restore` and `prerender-offset` oracle scenarios verify the 1.1.0
+lifecycle handling. Their RESET/OFFSET triggers are driven **synthetically**,
+and this is deliberate and disclosed here rather than hidden:
+
+- **bfcache restore** is triggered by dispatching a real
+  `PageTransitionEvent('pageshow', { persisted: true })` in the page. That is
+  the exact event type and the exact listener code path the browser fires on a
+  genuine bfcache restore -- both lite-inp (`resetState`) and web-vitals
+  (`onBFCacheRestore`) reset on it. What is synthetic is only the *trigger*, not
+  the code under test. A genuine cross-document `ctx.goto` + `ctx.back` bfcache
+  restore is NOT drivable in this oracle harness: the page is `about:blank`
+  instrumented once via `addScriptTag` (inject is not re-run on navigation), and
+  `about:blank` is not bfcache-eligible, so a real round-trip would drop the
+  instrumented globals (`window.__inp`, `window.__wv`) with no way to
+  re-instrument from inside a scenario. Forcing it risks exactly the kind of
+  hang that must be avoided, so we do not.
+
+- **prerender activationStart** is injected via an in-page
+  `performance.getEntriesByType('navigation')` shim that exposes a non-zero
+  `activationStart`, followed by a real `prerenderingchange` event. A real
+  prerender is likewise not drivable headless here. The offset math is proven
+  by re-reading the SAME interaction's reported `startTime` before and after:
+  it drops by exactly the injected `activationStart` (duration, being a delta,
+  is unaffected -- which is why web-vitals INP-value parity still holds).
+
+The runner's package-agnostic navigation seam (`ctx.goto`, `ctx.back`,
+`config.routes`) added in 1.1.0 IS exercised for real, in the standalone
+`runner nav seam` oracle test, which drives A -> B -> back through two in-memory
+routes. That proves the seam mechanically without endangering the instrumented
+gating scenarios. The seam is the liftable part; real bfcache/prerender fidelity
+is a browser-harness capability, not a library correctness question, and the
+library's reset/offset code paths are fully exercised by the synthetic triggers.
+
 ## Bottom line for a caller
 
 The only allocation you cannot remove is the platform's `getEntries()` array,

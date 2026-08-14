@@ -1,4 +1,4 @@
-// @zakkster/lite-inp 1.0.0
+// @zakkster/lite-inp 1.1.0
 // Zero-GC INP attribution via Event Timing API + Long Animation Frames.
 // Preallocated struct-of-arrays for interactions and LoAF entries.
 // The observer callbacks write to typed arrays -- no object creation,
@@ -7,7 +7,7 @@
 // Copyright (c) 2026 Zahary Shinikchiev <shinikchiev@yahoo.com>
 // MIT License
 
-export const VERSION = '1.0.2';
+export const VERSION = '1.1.0';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -41,15 +41,22 @@ function byDurationDesc(a, b) { return (b.duration || 0) - (a.duration || 0); }
  *   Lower = more data, higher observer cost. Default 16 catches all
  *   interactions above one frame.
  * @param {(entry: InpEntry) => void} [options.onUpdate]
- *   Called whenever a new worst-or-near-worst interaction is recorded.
- *   Fires on the hot path; the entry object is reused across calls.
- *   `entry.attribution` is always null here -- computing attribution
- *   allocates, so the observer callback skips it to preserve zero-GC
- *   discipline. Call `obs.getINP()` if you need attribution.
+ *   Fires on the hot path when EITHER a new worst interaction is recorded
+ *   (`entry.newWorst === true`) OR the p98 INP candidate changes
+ *   (`entry.inpChanged === true`); at least one flag is true on every call.
+ *   The entry object is reused across calls -- copy any field you need
+ *   before returning. `entry.attribution` is always null here -- computing
+ *   attribution allocates, so the observer callback skips it to preserve
+ *   zero-GC discipline. Call `obs.getINP()` if you need attribution.
  * @returns {InpObserver}
  */
 export function createInpObserver(options) {
     const opts = options || {};
+
+    // -- environment handles (captured once; null when absent -> fail closed) --
+    const perf = typeof performance !== 'undefined' ? performance : null;
+    const win = typeof window !== 'undefined' ? window : null;
+    const doc = typeof document !== 'undefined' ? document : null;
 
     // -- feature detection --
     const hasEvent = supports('event');
@@ -128,16 +135,51 @@ export function createInpObserver(options) {
     // -- INP tracking --
     // INP = p98 of all interactions' max durations.
     // For < 50 interactions, it's the worst.
-    // We track the current worst for the onUpdate callback.
+    // currentInpDuration is the running MAX (the worst duration seen); it is
+    // NOT the p98 INP. The honest p98 INP is lnDuration at the LIVE skip index
+    // (see liveInpIdx): the getters recompute that index on every read, because
+    // performance.interactionCount also advances on sub-threshold interactions
+    // the observer never delivers -- a cached index would go stale-low.
+    // inpIdx below is a hot-path APPROXIMATION of that index, refreshed per
+    // delivered interaction and used ONLY to detect an INP change for the
+    // onUpdate callback (lastInp caches the last value fired). It is never read
+    // by the getters.
     let currentInpDuration = 0;
+    let inpIdx = 0;
+    let lastInp = 0;
+
+    // Page-lifetime skip baseline. INP's skip is floor((lifetimeCount -
+    // icBaseline) / 50). performance.interactionCount is a monotonic
+    // page-lifetime counter the platform does NOT reset on bfcache restore, so
+    // on a restore (or destroy) we rebaseline it here -- a restored page is a
+    // fresh page view and its INP must start from zero interactions again.
+    let icBaseline = (perf !== null && perf.interactionCount) || 0;
+
+    // activationStart offset (prerender). Interaction timestamps are relative
+    // to time origin; after a prerendered page is activated, absolute times
+    // must be reported relative to activationStart. Read once at construction
+    // and refreshed on prerenderingchange. Fail closed: 0 when unavailable.
+    let actOffset = readActivationStart();
 
     // -- reusable entry object for onUpdate (zero alloc per callback) --
     const reusableEntry = {
         duration: 0, inputDelay: 0, processingTime: 0, presentationDelay: 0,
-        startTime: 0, eventType: '', interactionId: 0, attribution: null
+        startTime: 0, eventType: '', interactionId: 0, attribution: null,
+        newWorst: false, inpChanged: false
     };
 
     const onUpdate = opts.onUpdate || null;
+
+    // Read navigation activationStart (prerender offset). Cold path: allocates
+    // the platform's navigation-entry array, but runs only at construction and
+    // on prerenderingchange, never per interaction.
+    function readActivationStart() {
+        if (perf === null || typeof perf.getEntriesByType !== 'function') return 0;
+        const nav = perf.getEntriesByType('navigation');
+        if (!nav || nav.length === 0) return 0;
+        const as = nav[0].activationStart;
+        return typeof as === 'number' && as > 0 ? as : 0;
+    }
 
     // -----------------------------------------------------------------------
     // Event Timing observer callback -- HOT PATH
@@ -168,6 +210,13 @@ export function createInpObserver(options) {
                 iInteractionId[slot] = iid;
                 iDuration[slot] = 0;  // will be set below
                 iCount++;
+                // Refresh the hot-path INP index APPROXIMATION for the onUpdate
+                // inpChanged flag only. This is NOT the source of truth for the
+                // `inp` getter -- that recomputes the skip live, because
+                // performance.interactionCount can advance on sub-threshold
+                // interactions that are never delivered here. Branchless
+                // arithmetic, zero allocation.
+                inpIdx = (((perf !== null && perf.interactionCount ? perf.interactionCount : iCount) - icBaseline) / 50) | 0;
             }
 
             // Take the max duration across events in the same interaction
@@ -190,10 +239,18 @@ export function createInpObserver(options) {
                 maintainLongest(slot);
             }
 
-            // Update current INP candidate
-            if (dur > currentInpDuration) {
-                currentInpDuration = dur;
-                if (onUpdate !== null) {
+            // onUpdate contract: fire when a NEW WORST interaction is recorded
+            // OR when the p98 INP candidate CHANGES (the longest-N insert above
+            // moved the value at inpIdx). Both are derived allocation-free from
+            // the list state; the single call site below reuses one entry.
+            if (onUpdate !== null) {
+                const newWorst = dur > currentInpDuration;
+                if (newWorst) currentInpDuration = dur;
+                const idx = inpIdx < lnCount ? inpIdx : lnCount - 1;
+                const cur = idx >= 0 ? lnDuration[idx] : 0;
+                const inpChanged = cur !== lastInp;
+                if (inpChanged) lastInp = cur;
+                if (newWorst || inpChanged) {
                     // Hot path: primitives only, no allocation. Attribution is
                     // a cold-path concern (call getINP() when reporting) so the
                     // observer callback never allocates per interaction. The
@@ -202,8 +259,12 @@ export function createInpObserver(options) {
                     // inside onUpdate at the cost of one heap object.
                     fillEntryPrimitives(reusableEntry, slot);
                     reusableEntry.attribution = null;
+                    reusableEntry.newWorst = newWorst;
+                    reusableEntry.inpChanged = inpChanged;
                     onUpdate(reusableEntry);
                 }
+            } else if (dur > currentInpDuration) {
+                currentInpDuration = dur;
             }
         }
     }
@@ -403,24 +464,35 @@ export function createInpObserver(options) {
         target.inputDelay = iInputDelay[slot];
         target.processingTime = iProcessingTime[slot];
         target.presentationDelay = iPresentationDelay[slot];
-        target.startTime = iStartTime[slot];
+        // startTime is the only absolute timestamp; correct it for a prerender
+        // activationStart (0 on a normally-loaded page). Unconditional single
+        // subtraction -- no branch, no allocation.
+        target.startTime = iStartTime[slot] - actOffset;
         target.eventType = eventTypes[iEventType[slot]] || '';
         target.interactionId = iInteractionId[slot];
+    }
+
+    // Zero-alloc primitive fill from the longest-N SoA (no attribution). Shared
+    // by getINPInto() (hot-callable) and fillEntryFromLongest() (cold path).
+    function fillLongestPrimitives(target, idx) {
+        target.duration = lnDuration[idx];
+        target.inputDelay = lnInputDelay[idx];
+        target.processingTime = lnProcessingTime[idx];
+        target.presentationDelay = lnPresentationDelay[idx];
+        target.startTime = lnStartTime[idx] - actOffset;
+        target.eventType = eventTypes[lnEventType[idx]] || '';
+        target.interactionId = lnInteractionId[idx];
     }
 
     // Cold path: full entry including LoAF attribution, read from the
     // longest-N SoA (which holds its own copies -- never a live ring slot).
     // Called by getINP(); allocates the returned entry by design.
     function fillEntryFromLongest(target, idx) {
-        target.duration = lnDuration[idx];
-        target.inputDelay = lnInputDelay[idx];
-        target.processingTime = lnProcessingTime[idx];
-        target.presentationDelay = lnPresentationDelay[idx];
-        target.startTime = lnStartTime[idx];
-        target.eventType = eventTypes[lnEventType[idx]] || '';
-        target.interactionId = lnInteractionId[idx];
+        fillLongestPrimitives(target, idx);
         // LoAF attribution is still correlated at getINP() time from the stored
         // startTime/duration window -- so cold-path attribution keeps working.
+        // Correlation runs in raw (un-offset) time to match the LoAF ring's
+        // stored startTimes.
         const endTime = lnStartTime[idx] + lnDuration[idx];
         const loafSlot = findLoafForInteraction(lnStartTime[idx], endTime);
         target.attribution = buildAttribution(loafSlot);
@@ -430,20 +502,27 @@ export function createInpObserver(options) {
     // INP computation -- cold path, called on demand
     // -----------------------------------------------------------------------
 
+    // Live p98 skip index into the (DESC-sorted) longest-N list. The single
+    // source of truth for every INP read: computeINP, getInp, getINPInto.
+    // INP is a PAGE-LIFETIME percentile, so the skip uses the true lifetime
+    // unique-interaction count -- performance.interactionCount when available,
+    // else raw iCount. It is recomputed on EVERY read, never cached: the
+    // platform counter also advances on sub-threshold interactions the observer
+    // never delivers, so a cached index would go stale-low and read a longer
+    // (lower-index) duration than the canonical skip. icBaseline scopes the
+    // skip to this page view (correct across a bfcache restore). Pure integer
+    // arithmetic, zero allocation. Returns -1 when the list is empty.
+    function liveInpIdx() {
+        if (lnCount === 0) return -1;
+        const lc = perf !== null && perf.interactionCount ? perf.interactionCount : iCount;
+        const skip = (((lc - icBaseline) / 50) | 0);
+        return skip < lnCount ? skip : lnCount - 1;
+    }
+
     function computeINP() {
         // Fail closed: no interactions -> no INP (null is not zero).
-        if (lnCount === 0) return null;
-
-        // INP is a PAGE-LIFETIME percentile. The skip must use the true
-        // lifetime unique-interaction count, not the capped recency window:
-        // performance.interactionCount when available, else raw iCount (which
-        // only ever increments -- the capped `n` would under-count skips and
-        // reintroduce IN-01).
-        const lifetimeCount = typeof performance !== 'undefined' && performance.interactionCount
-            ? performance.interactionCount
-            : iCount;
-        const skip = Math.floor(lifetimeCount / 50);
-        const targetIdx = skip < lnCount ? skip : lnCount - 1;
+        const targetIdx = liveInpIdx();
+        if (targetIdx < 0) return null;
 
         // Read from the longest-N list -- no durations/slots/indices arrays,
         // no sort. Only the returned entry (+ attribution) allocates.
@@ -473,7 +552,7 @@ export function createInpObserver(options) {
                 inputDelay: iInputDelay[slot],
                 processingTime: iProcessingTime[slot],
                 presentationDelay: iPresentationDelay[slot],
-                startTime: iStartTime[slot],
+                startTime: iStartTime[slot] - actOffset,
                 eventType: eventTypes[iEventType[slot]] || '',
                 interactionId: iInteractionId[slot]
             };
@@ -510,27 +589,87 @@ export function createInpObserver(options) {
         return result;
     }
 
-    function destroy() {
-        if (eventObs) { eventObs.disconnect(); eventObs = null; }
-        if (loafObs) { loafObs.disconnect(); loafObs = null; }
-        // Fail closed: reset all counters so post-destroy getters return
-        // null/empty rather than stale data. Observers are nulled above, so
-        // nothing re-observes; the interning arrays are harmless to keep.
+    // Reusable state reset -- serves destroy(), a bfcache pageshow restore, and
+    // any future soft-navigation reset. Fail closed: every counter goes to zero
+    // so getters return null/empty rather than stale data; the p98 tracking
+    // (inpIdx/lastInp) is zeroed and icBaseline is rebaselined to the current
+    // page-lifetime interaction count so the next page view's skip starts fresh.
+    function resetState() {
         idToSlot.clear();
         iCount = 0;
         lnCount = 0;
         currentInpDuration = 0;
         lCount = 0;
         lHead = 0;
+        inpIdx = 0;
+        lastInp = 0;
+        icBaseline = (perf !== null && perf.interactionCount) || 0;
+    }
+
+    // A bfcache restore is a NEW page view: the same document is re-shown, but
+    // its INP must be measured from zero again. event.persisted distinguishes a
+    // real bfcache restore from an ordinary pageshow.
+    function onPageShow(event) {
+        if (event && event.persisted) resetState();
+    }
+
+    // Prerender activation: refresh the activationStart offset so absolute
+    // timestamps reported after activation are relative to activation.
+    function onPrerenderingChange() {
+        actOffset = readActivationStart();
+    }
+
+    if (win !== null) win.addEventListener('pageshow', onPageShow);
+    if (doc !== null) doc.addEventListener('prerenderingchange', onPrerenderingChange);
+
+    function destroy() {
+        if (eventObs) { eventObs.disconnect(); eventObs = null; }
+        if (loafObs) { loafObs.disconnect(); loafObs = null; }
+        if (win !== null) win.removeEventListener('pageshow', onPageShow);
+        if (doc !== null) doc.removeEventListener('prerenderingchange', onPrerenderingChange);
+        // Observers are nulled and listeners removed above, so nothing
+        // re-observes; the interning arrays are harmless to keep.
+        resetState();
+    }
+
+    // O(1), zero-alloc read of the actual p98 INP: the value at the LIVE skip
+    // index in the longest-N list. Fail closed: null when no interaction has
+    // been recorded (null is not zero). Equal to getINP().duration because it
+    // recomputes the same skip live (liveInpIdx), not from a cached index.
+    function getInp() {
+        const idx = liveInpIdx();
+        return idx < 0 ? null : lnDuration[idx];
+    }
+
+    // Zero-alloc INP read into a caller-owned entry. Returns true when filled,
+    // false when there is no interaction yet (target left untouched). attribution
+    // is set to null -- computing it allocates; call getINP() for attribution.
+    function getINPInto(target) {
+        const idx = liveInpIdx();
+        if (idx < 0) return false;
+        fillLongestPrimitives(target, idx);
+        target.attribution = null;
+        return true;
     }
 
     return {
         getINP: getINP,
+        getINPInto: getINPInto,
         getInteractions: getInteractions,
         getLoafs: getLoafs,
         destroy: destroy,
         get interactionCount() { return Math.min(iCount, iCap); },
         get loafCount() { return Math.min(lCount, lCap); },
+        // The actual p98 INP (ms), O(1) zero alloc, null when empty.
+        get inp() { return getInp(); },
+        // The worst (max) interaction duration (ms) seen this page view.
+        get worstDuration() { return currentInpDuration; },
+        /**
+         * @deprecated since 1.1.0 -- misnamed. This is the running WORST
+         * (max) duration, NOT the p98 INP. Use `inp` for the actual INP or
+         * `worstDuration` for the max. Kept as an alias of `worstDuration`
+         * for this minor; a future major removes it.
+         */
         get currentINP() { return currentInpDuration; },
         get supported() { return hasEvent; },
         get loafSupported() { return hasLoaf; }

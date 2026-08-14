@@ -30,6 +30,13 @@
 //   collect   async (page, ctx) => any
 //             Returns a structured-clonable JSON snapshot for the scenario.
 //
+//   routes    optional { [url: string]: string } | (url) => string | null
+//             In-memory HTTP routes. When provided, every navigation request is
+//             intercepted: a matching entry is fulfilled with its HTML body, so
+//             a scenario can drive real multi-page / bfcache navigation with
+//             ctx.goto/ctx.back without a server. Nothing here is domain
+//             specific -- a route is just a URL -> HTML string.
+//
 //   options   { headless?: boolean, viewport?: {width,height}, onLog?: (s)=>void }
 //             viewport defaults to 800x600; nothing about it is baked in.
 //
@@ -44,6 +51,8 @@
 //   ctx.frame()           Await two rAFs (one painted frame boundary).
 //   ctx.wait(ms)          Await ms of wall time in the page.
 //   ctx.eval(fn, ...args) page.evaluate passthrough.
+//   ctx.goto(url)         Navigate the page to url (uses config.routes when set).
+//   ctx.back()            Navigate back in history (Playwright page.goBack).
 //   ctx.log(s)            options.onLog passthrough.
 //
 // The caller owns Playwright/CDP semantics; this seam owns nothing domain
@@ -58,6 +67,7 @@ export async function runScenarios(config) {
     const inject = config.inject;
     const scenarios = config.scenarios || [];
     const collect = config.collect;
+    const routes = config.routes || null;
     const options = config.options || {};
     const headless = options.headless !== false;
     const viewport = options.viewport || { width: 800, height: 600 };
@@ -74,6 +84,8 @@ export async function runScenarios(config) {
             const page = await browser.newPage({ viewport: viewport });
             const cdp = await page.context().newCDPSession(page);
             await cdp.send('Input.setIgnoreInputEvents', { ignore: false }).catch(function () {});
+
+            if (routes !== null) await registerRoutes(page, routes);
 
             const ctx = makeCtx(page, cdp, onLog);
 
@@ -118,16 +130,44 @@ function makeCtx(page, cdp, onLog) {
             return new Promise(function (r) { setTimeout(r, m); });
         }, ms);
     }
+    function goto(url) { return page.goto(url); }
+    function back() { return page.goBack(); }
     return {
         page: page,
         cdp: cdp,
         tap: tap,
         frame: frame,
         wait: wait,
+        goto: goto,
+        back: back,
         eval: function (fn) {
             const args = Array.prototype.slice.call(arguments, 1);
             return page.evaluate(fn, ...args);
         },
         log: onLog
     };
+}
+
+// Register in-memory HTTP routes. `routes` is either a { url: html } map or a
+// function (url) -> html|null. Any navigation whose URL resolves to an HTML
+// body is fulfilled from memory; everything else continues to the network (or
+// 404s under Playwright's default). Package-agnostic: a route is URL -> HTML.
+async function registerRoutes(page, routes) {
+    const lookup = typeof routes === 'function'
+        ? routes
+        : function (url) {
+            if (routes[url] !== undefined) return routes[url];
+            for (const key in routes) {
+                if (url.indexOf(key) !== -1) return routes[key];
+            }
+            return null;
+        };
+    await page.route('**/*', async function (route) {
+        const body = lookup(route.request().url());
+        if (body != null) {
+            await route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: body });
+        } else {
+            await route.continue();
+        }
+    });
 }

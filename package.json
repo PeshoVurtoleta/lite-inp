@@ -1,6 +1,6 @@
 {
   "name": "@zakkster/lite-inp",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "author": "Zahary Shinikchiev <shinikchiev@yahoo.com>",
   "description": "Zero-GC INP attribution via Event Timing API + Long Animation Frames. Preallocated struct-of-arrays for interactions and LoAF entries. The observer callbacks write to typed arrays, not objects.",
   "type": "module",
@@ -29,9 +29,10 @@
     "test:node": "node --test test/*.test.mjs test/torture.mjs",
     "test:torture": "node --expose-gc test/torture.mjs",
     "test:gc-longest": "node --expose-gc test/gc.longest.mjs",
+    "test:gc-getters": "node --expose-gc test/gc.getters.mjs",
     "test:browser": "node --test test/browser/oracle.test.mjs",
     "test:alloc": "node test/browser/alloc.cdp.mjs",
-    "verify": "npm run test:node && npm run test:torture && npm run test:gc-longest && npm run test:browser && npm run test:alloc"
+    "verify": "npm run test:node && npm run test:torture && npm run test:gc-longest && npm run test:gc-getters && npm run test:browser && npm run test:alloc"
   },
   "keywords": [
     "inp",

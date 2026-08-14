@@ -19,11 +19,27 @@ createInpObserver(options?) -- start observing.
   options: interactionCap, loafCap, durationThreshold, onUpdate.
 
 obs.getINP() -- current INP entry with attribution (cold path, allocates).
+obs.getINPInto(target) -- fill a caller-owned entry with the current INP,
+  zero alloc; returns true/false; attribution is null. getINP() stays the
+  ergonomic allocating form.
 obs.getInteractions() -- all interactions sorted by duration.
 obs.getLoafs() -- recent LoAF entries with scripts.
-obs.destroy() -- disconnect observers.
-obs.currentINP -- current worst duration (number, no alloc).
+obs.destroy() -- disconnect observers, remove listeners, reset state.
+obs.inp -- the actual p98 INP duration (number, O(1) no alloc; null when
+  no interaction recorded). Equals getINP()?.duration -- both recompute the
+  same page-lifetime skip live on every read.
+obs.worstDuration -- the worst (max) interaction duration (number, no alloc).
+obs.currentINP -- DEPRECATED alias of worstDuration (the max, NOT the p98
+  INP). Use obs.inp for the INP.
 obs.supported / obs.loafSupported -- feature detection.
+
+onUpdate(entry) fires on the hot path when a new worst is recorded
+(entry.newWorst) OR the p98 INP candidate changes (entry.inpChanged); the
+entry is reused, attribution is null.
+
+Lifecycle: a bfcache restore (pageshow with event.persisted) resets INP for
+the new page view; a prerender activationStart offset is applied to reported
+startTimes. Both handled internally, zero config.
 
 ## Zero-GC design
 

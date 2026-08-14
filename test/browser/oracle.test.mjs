@@ -20,7 +20,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runScenarios } from './runner.mjs';
-import { SCENARIOS, installJank } from './scenarios.mjs';
+import { SCENARIOS, installJank, bfcacheProbe, prerenderProbe, PRERENDER_OFFSET } from './scenarios.mjs';
 import { controlV100INP } from './control.v100.mjs';
 
 const SKIP = process.env.LITE_NO_BROWSER === '1';
@@ -56,6 +56,8 @@ function collect(page) {
         for (let i = 0; i < inters.length; i++) durs[i] = inters[i].duration;
         return {
             liteInp: inp ? inp.duration : null,
+            liteInpGetter: window.__inp.inp,        // O(1) zero-alloc getter
+            liteWorst: window.__inp.worstDuration,
             liteCurrent: window.__inp.currentINP,
             webVitals: window.__wv,
             interactions: durs,
@@ -81,11 +83,23 @@ test('oracle: lite-inp agrees with web-vitals across the scenario corpus', { ski
     let wrapSeen = false;
     for (const r of results) {
         const s = r.snapshot;
-        console.log('  ' + r.name.padEnd(14) +
+        console.log('  ' + r.name.padEnd(16) +
             ' lite=' + fmt(s.liteInp) +
             ' web-vitals=' + fmt(s.webVitals) +
             ' interactions=' + s.interactionCount +
             ' lifetime=' + s.lifetimeCount);
+
+        // obs.inp (the O(1) zero-alloc getter) must equal getINP().duration on
+        // EVERY scenario, and both must be null together when no above-threshold
+        // interaction was recorded.
+        assert.equal(s.liteInp === null, s.liteInpGetter === null,
+            r.name + ': obs.inp and getINP() disagree on null (inp=' +
+            fmt(s.liteInpGetter) + ' getINP=' + fmt(s.liteInp) + ')');
+        if (s.liteInp !== null) {
+            assert.equal(s.liteInpGetter, s.liteInp,
+                r.name + ': obs.inp (' + fmt(s.liteInpGetter) +
+                ') must equal getINP().duration (' + fmt(s.liteInp) + ')');
+        }
 
         // Both read the same threshold-16 feed: either both see an above-
         // threshold INP, or neither does. Agreement includes agreeing on "none".
@@ -122,6 +136,71 @@ test('oracle: lite-inp agrees with web-vitals across the scenario corpus', { ski
         }
     }
     assert.ok(wrapSeen, 'wrap600 scenario did not run');
+
+    // --- bfcache-restore: a persisted pageshow is a NEW page view -----------
+    // The collect snapshot above already asserted post-restore lite==web-vitals
+    // (both reset on the restore) within QUANT via the generic loop. Here the
+    // probes prove the RESET itself: the pre-restore ~500 ms peak was real and
+    // is ABSENT after the restore -- the post-restore INP reflects only the
+    // second, short burst.
+    console.log('  bfcache-restore  prePeak=' + fmt(bfcacheProbe.prePeak) +
+        ' postInp=' + fmt(bfcacheProbe.postInp) +
+        ' realNav=' + bfcacheProbe.real);
+    assert.ok(bfcacheProbe.prePeak !== null && bfcacheProbe.prePeak >= 400,
+        'bfcache: pre-restore INP should be a clear peak (>= 400 ms), got ' + fmt(bfcacheProbe.prePeak));
+    assert.ok(bfcacheProbe.postInp !== null && bfcacheProbe.postInp < 200,
+        'bfcache: post-restore INP should reflect only the short second burst (< 200 ms), got ' + fmt(bfcacheProbe.postInp));
+    assert.ok(bfcacheProbe.postInp < bfcacheProbe.prePeak * 0.5,
+        'bfcache: the pre-restore ~500 ms peak must be ABSENT after the restore ' +
+        '(post ' + fmt(bfcacheProbe.postInp) + ' vs pre ' + fmt(bfcacheProbe.prePeak) + ')');
+
+    // --- prerender-offset: activationStart is subtracted from startTimes -----
+    // duration is a delta (unaffected by activationStart), so the generic loop
+    // already confirmed the INP value still matches web-vitals. Here we prove
+    // the offset was applied: the SAME interaction's reported startTime dropped
+    // by exactly the injected activationStart once prerenderingchange fired.
+    console.log('  prerender-offset sBefore=' + fmt(prerenderProbe.sBefore) +
+        ' sAfter=' + fmt(prerenderProbe.sAfter) +
+        ' offset=' + prerenderProbe.offset);
+    assert.ok(prerenderProbe.sBefore !== null && prerenderProbe.sAfter !== null,
+        'prerender: reported startTimes captured before and after prerenderingchange');
+    const applied = prerenderProbe.sBefore - prerenderProbe.sAfter;
+    assert.ok(Math.abs(applied - PRERENDER_OFFSET) < 0.5,
+        'prerender: reported startTime must drop by activationStart (' + PRERENDER_OFFSET +
+        ' ms); observed drop = ' + applied.toFixed(3) + ' ms');
+});
+
+test('runner nav seam: goto/back/routes round-trip', { skip: SKIP }, async () => {
+    // Proves the runner's package-agnostic navigation seam (ctx.goto, ctx.back,
+    // config.routes) actually drives multi-page history, independent of any
+    // lite-inp instrumentation. Two in-memory routes; navigate A -> B -> back.
+    const routes = {
+        'http://lite-inp.test/a': '<!doctype html><title>A</title><body>a</body>',
+        'http://lite-inp.test/b': '<!doctype html><title>B</title><body>b</body>'
+    };
+    const seen = [];
+    await runScenarios({
+        pageUrl: 'http://lite-inp.test/a',
+        routes: routes,
+        inject: async function () {},
+        collect: async function () { return null; },
+        scenarios: [{
+            name: 'nav',
+            async run(ctx) {
+                seen.push(ctx.page.url());        // A (initial)
+                await ctx.goto('http://lite-inp.test/b');
+                seen.push(ctx.page.url());        // B
+                await ctx.back();
+                seen.push(ctx.page.url());        // back to A
+            }
+        }],
+        options: { headless: true, onLog: function (s) { console.log('  [nav] ' + s); } }
+    });
+    assert.deepEqual(seen, [
+        'http://lite-inp.test/a',
+        'http://lite-inp.test/b',
+        'http://lite-inp.test/a'
+    ], 'ctx.goto/ctx.back drove A -> B -> back to A through config.routes');
 });
 
 function fmt(v) { return v === null || v === undefined ? 'null' : (Math.round(v * 10) / 10); }
