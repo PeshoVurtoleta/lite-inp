@@ -9,14 +9,15 @@
 // before createInpObserver runs), exactly like test/gc.longest.mjs -- ZERO
 // additions to the public surface for the sake of the test. The longest-N list
 // is populated first so inpIdx lands on a real interior slot, then the three
-// reads are measured with measureAllocs at maxBytesPerCall: 0.
+// reads are measured. The gate is the DETERMINISTIC per-call SLOPE (see below),
+// NOT a lucky exact-0 batch.
 //
 // This gate MEASURES; it never prints SKIPPED. measureAllocs needs forced
 // settling (--expose-gc, which the npm script supplies). If run without it the
 // measurement is inconclusive and the gate FAILS closed rather than skipping.
 
 import assert from 'node:assert/strict';
-import { measureAllocs, checkAllocs } from '@zakkster/lite-gc-profiler';
+import { measureAllocs } from '@zakkster/lite-gc-profiler';
 
 // --- mock global PerformanceObserver -------------------------------------
 let capturedEventCb = null;
@@ -113,30 +114,74 @@ function readGetters() {
     sink += target.duration;
 }
 
+// --- DETERMINISTIC per-call allocation via the SLOPE method --------------
+// A single measureAllocs min-batch is nondeterministic at exactly 0: fixed GC
+// bookkeeping (live closure HeapNumbers, ephemeron upkeep) leaves a small,
+// call-count-INDEPENDENT residue that randomly lands at 0 or ~88 bytes. So we do
+// NOT gate on min==0. Instead we measure the min-batch total at N and at 4N
+// iterations and take the SLOPE:
+//
+//   perCall = (minBatch@4N - minBatch@N) / (4N - N)
+//
+// Real per-call allocation scales linearly with iterations and survives the
+// subtraction; a fixed residue R cancels (R - R -> ~0). The gate passes iff
+// perCall <= EPS, a tight bound the fixed residue satisfies but real per-call
+// allocation cannot (the allocating control below lands at ~32 B/op and FAILS).
+// This is immune to the exact-0-batch flake. `measureAllocs` clamps negative
+// batch deltas to 0, so minBatch is a bounded non-negative floor.
 const ITER = 50000;
-const result = measureAllocs(readGetters, { iterations: ITER, batches: 8, warmup: ITER });
-const report = checkAllocs(result, { maxBytesPerCall: 0 });
+const EPS = 0.5; // B/op ceiling for "zero per-call" (well under 1; control ~32)
 
-console.log('alloc: source=' + result.source + ' settled=' + result.settled +
-    ' bytesPerCall(min)=' + result.bytesPerCall +
-    ' maxBytesPerCall=' + result.maxBytesPerCall +
-    ' verdict=' + report.verdict);
+function minBatchBytes(fn, iters, batches) {
+    const r = measureAllocs(fn, { iterations: iters, batches: batches, warmup: iters });
+    const bb = r.batchBytes.filter((x) => x !== null);
+    return { min: Math.min.apply(null, bb), settled: r.settled, source: r.source };
+}
+function perCallSlope(fn, iters, batches) {
+    const a = minBatchBytes(fn, iters, batches);
+    const b = minBatchBytes(fn, iters * 4, batches);
+    const slope = Math.max(0, (b.min - a.min) / (iters * 4 - iters));
+    return { slope: slope, minN: a.min, min4N: b.min, settled: a.settled && b.settled, source: a.source };
+}
+
+// One discarded warm pass settles JIT/heap before the two measured arms.
+minBatchBytes(readGetters, ITER, 8);
+const s = perCallSlope(readGetters, ITER, 16);
+
+console.log('alloc: source=' + s.source + ' settled=' + s.settled +
+    ' minBatch@N=' + s.minN + ' minBatch@4N=' + s.min4N +
+    ' perCall(slope)=' + s.slope.toFixed(6) + ' B/op eps=' + EPS);
 
 // Guard against a no-op measurement (would falsely show 0 alloc).
 assert.ok(sink > 0, 'getters were actually read (sink accrued)');
 assert.ok(obs.getINPInto(target) === true && target.attribution === null,
     'getINPInto fills the target and nulls attribution');
 
-if (report.verdict === 'fail') {
-    console.error('FAIL zero-alloc getters allocate: bytesPerCall=' + result.bytesPerCall);
-    process.exitCode = 1;
-} else if (report.verdict === 'inconclusive') {
-    // --expose-gc missing, or no settle. Surface it rather than a false pass.
-    console.error('INCONCLUSIVE alloc measurement (run with --expose-gc): ' +
-        (report.reasons ? report.reasons.join('; ') : ''));
+// TEETH: the SAME slope method on an allocating control (one object pushed per
+// call) must clear EPS by orders of magnitude -- proving the gate detects real
+// per-call allocation, not just noise.
+const ctrlStore = [];
+function allocControl() { ctrlStore.push({ x: 0 }); }
+const cs = perCallSlope(allocControl, 40000, 4);
+assert.ok(ctrlStore.length > 0, 'control actually allocated');
+console.log('control: perCall(slope)=' + cs.slope.toFixed(3) + ' B/op (must exceed eps ' + EPS + ')');
+
+let bad = false;
+if (!s.settled) {
+    console.error('INCONCLUSIVE alloc measurement (run with --expose-gc): not settled on every batch');
+    bad = true;
+} else if (s.slope > EPS) {
+    console.error('FAIL zero-alloc getters allocate: perCall(slope)=' + s.slope + ' > ' + EPS);
+    bad = true;
+}
+if (cs.slope <= EPS) {
+    console.error('FAIL alloc control NOT flagged (slope=' + cs.slope + ' <= ' + EPS + ') -- gate has no teeth');
+    bad = true;
+}
+
+if (bad) {
     process.exitCode = 1;
 } else {
-    console.log('GATE getters.mjs alloc=' +
-        (result.bytesPerCall <= 0 ? 0 : result.bytesPerCall) + ' B/op verdict=' +
-        report.verdict + ' | ok');
+    console.log('GATE getters.mjs perCall=' + s.slope.toFixed(6) + ' B/op eps=' + EPS +
+        ' controlSlope=' + cs.slope.toFixed(1) + ' controlFlagged=true | ok');
 }

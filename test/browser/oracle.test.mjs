@@ -20,7 +20,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runScenarios } from './runner.mjs';
-import { SCENARIOS, installJank, bfcacheProbe, prerenderProbe, PRERENDER_OFFSET } from './scenarios.mjs';
+import { SCENARIOS, FIXTURE_SCENARIOS, installJank, bfcacheProbe, prerenderProbe, PRERENDER_OFFSET, attributionProbe, churnProbe } from './scenarios.mjs';
 import { controlV100INP } from './control.v100.mjs';
 
 const SKIP = process.env.LITE_NO_BROWSER === '1';
@@ -168,6 +168,72 @@ test('oracle: lite-inp agrees with web-vitals across the scenario corpus', { ski
     assert.ok(Math.abs(applied - PRERENDER_OFFSET) < 0.5,
         'prerender: reported startTime must drop by activationStart (' + PRERENDER_OFFSET +
         ' ms); observed drop = ' + applied.toFixed(3) + ' ms');
+});
+
+test('attribution (IN2): deterministic, phase-correct, multi-LoAF', { skip: SKIP }, async () => {
+    const results = await runScenarios({
+        pageUrl: 'about:blank',
+        inject: inject,                 // provides window.createInpObserver
+        scenarios: FIXTURE_SCENARIOS,
+        collect: function () { return null; },
+        options: { headless: true, onLog: function (s) { console.log('  [fixtures] ' + s); } }
+    });
+    assert.equal(results.length, FIXTURE_SCENARIOS.length,
+        'expected ' + FIXTURE_SCENARIOS.length + ' fixture results, got ' + results.length);
+
+    // --- (a) paint lands frames after processing: presentation-dominated ------
+    const pa = attributionProbe.paintAfterProcessing;
+    console.log('  paintAfterProcessing  phase=' + pa.attribution.phase +
+        ' loafs=' + pa.attribution.loafs.length + ' target=' + pa.attribution.target +
+        ' identical=' + pa.identical);
+    assert.equal(pa.identical, true, 'paintAfterProcessing: attribution byte-identical across 3 replays');
+    assert.equal(pa.attribution.phase, 'presentation',
+        'paintAfterProcessing: presentationDelay > processingTime -> presentation phase');
+    assert.equal(pa.attribution.loafs.length, 1,
+        'paintAfterProcessing: correlates against the paint frame only, not the processing frame');
+    assert.equal(pa.attribution.loafs[0].startTime, 250,
+        'paintAfterProcessing: the correlated LoAF is the LATER paint frame (startTime 250)');
+    assert.equal(pa.attribution.loafs[0].scripts[0].sourceFunctionName, 'render',
+        'paintAfterProcessing: the paint frame carries its render script');
+    assert.equal(pa.attribution.target, 'button#fixture',
+        'paintAfterProcessing: interned element target resolves to tag#id');
+
+    // --- (b) two interactions inside one LoAF --------------------------------
+    const tw = attributionProbe.twoInOneLoaf;
+    console.log('  twoInOneLoaf          phase=' + tw.attribution.phase +
+        ' loafs=' + tw.attribution.loafs.length + ' interactions=' + tw.interactionCount +
+        ' identical=' + tw.identical);
+    assert.equal(tw.identical, true, 'twoInOneLoaf: attribution byte-identical across 3 replays');
+    assert.equal(tw.interactionCount, 2, 'twoInOneLoaf: both interactions were recorded');
+    assert.equal(tw.attribution.phase, 'processing', 'twoInOneLoaf: processing-dominated');
+    assert.equal(tw.attribution.loafs.length, 1,
+        'twoInOneLoaf: the worst interaction correlates to exactly the one enclosing LoAF');
+    assert.equal(tw.attribution.loafs[0].startTime, 100, 'twoInOneLoaf: that LoAF is M (startTime 100)');
+    assert.equal(tw.attribution.loafs[0].duration, 200, 'twoInOneLoaf: M duration 200');
+
+    // --- (c) one interaction spanning three LoAFs: EXACTLY 3 slots -----------
+    const sp = attributionProbe.spanThreeLoafs;
+    console.log('  spanThreeLoafs        phase=' + sp.attribution.phase +
+        ' loafs=' + sp.attribution.loafs.length +
+        ' starts=[' + sp.attribution.loafs.map(function (l) { return l.startTime; }).join(',') + ']' +
+        ' identical=' + sp.identical);
+    assert.equal(sp.identical, true, 'spanThreeLoafs: attribution byte-identical across 3 replays');
+    assert.equal(sp.attribution.phase, 'processing', 'spanThreeLoafs: processing-dominated');
+    assert.equal(sp.attribution.loafs.length, 3,
+        'spanThreeLoafs: the processing window spans three frames -> EXACTLY 3 filled slots');
+    assert.deepEqual(sp.attribution.loafs.map(function (l) { return l.startTime; }), [100, 150, 200],
+        'spanThreeLoafs: the three LoAFs are collected earliest-start first');
+    assert.deepEqual(sp.attribution.loafs.map(function (l) { return l.scripts[0].sourceFunctionName; }),
+        ['fa', 'fb', 'fc'], 'spanThreeLoafs: each collected LoAF carries its own scripts');
+
+    // --- churnTargets: 10k interactions, DOM churn, intern cap holds ---------
+    console.log('  churnTargets          target=' + churnProbe.target +
+        ' interactionCount=' + churnProbe.interactionCount + ' distinct=' + churnProbe.distinct);
+    assert.equal(churnProbe.distinct, 10000, 'churnTargets: drove 10k interactions');
+    assert.equal(churnProbe.target, null,
+        'churnTargets: the worst (last, over the 128 cap) target fails closed to null under churn, never a wrong element');
+    assert.equal(churnProbe.interactionCount, 512,
+        'churnTargets: the recency ring stays bounded at interactionCap (512) across 10k interactions');
 });
 
 test('runner nav seam: goto/back/routes round-trip', { skip: SKIP }, async () => {

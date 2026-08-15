@@ -49,7 +49,7 @@ addEventListener('visibilitychange', () => {
 
 2. **Long Animation Frames observer** (`type: 'long-animation-frame'`) captures LoAF entries with script attribution (invoker, sourceURL, sourceFunctionName, duration). Top-3 scripts per LoAF are retained.
 
-3. **INP computation** correlates the p98 worst interaction with the LoAF entry whose time window overlaps it, giving you the script-level attribution for why the interaction was slow.
+3. **INP computation** correlates the p98 worst interaction with every LoAF overlapping its unquantized processing window (`processingStart..processingEnd`), up to 4, plus the element target and the dominant phase -- giving you script- and element-level attribution for why the interaction was slow.
 
 ## Zero-GC hot path
 
@@ -98,18 +98,41 @@ Cold-path methods (`getINP()`, `getInteractions()`, `getLoafs()`) allocate resul
     startTime: number;
     eventType: string;         // 'pointerup', 'keydown', 'click', etc.
     interactionId: number;
-    attribution: {             // null on hot path (onUpdate reusable entry)
-        loafDuration: number;  //   and when no overlapping LoAF exists;
-        loafBlockingDuration: number;  // populated on cold path
-        scripts: [{                    // (getINP, getInteractions).
-            invoker: string;
-            sourceURL: string;
-            sourceFunctionName: string;
-            duration: number;
-        }]
+    // Populated only by getINP() (cold path). null when there is no interaction,
+    // on the onUpdate reusable entry, and after getINPInto().
+    attribution: {
+        loafs: [{                        // up to LOAF_MATCH_CAP (4) overlapping
+            startTime: number;           // LoAFs, earliest-start first; empty []
+            duration: number;            // when no LoAF overlaps.
+            blockingDuration: number;
+            styleAndLayoutStart: number;
+            scripts: [{
+                invoker: string;
+                sourceURL: string;
+                sourceFunctionName: string;
+                duration: number;
+            }];
+        }];
+        target: string | null;           // interned 'tag#id' / 'tag.class' (NOT a
+                                         // CSS selector); null when unknown, or
+                                         // past the 128-target cap (fail closed).
+        phase: 'processing' | 'presentation';  // 'presentation' when the paint
+                                         // dominates (presentationDelay >
+                                         // processingTime), else 'processing'.
     } | null;
 }
 ```
+
+Attribution correlates against the **unquantized processing window**
+(`processingStart..processingEnd`), collecting **all** overlapping LoAFs up to
+`LOAF_MATCH_CAP = 4` (earliest-start first, the deterministic tie-break) -- not a
+single best overlap. Presentation-dominated interactions correlate against the
+next frame's style/layout segment (`styleAndLayoutStart`) instead of the
+processing scripts. `target` is interned through a WeakMap keyed by node identity,
+so the Node is **never stored** and detached subtrees stay collectable (no RUM
+leak); the intern map is bounded at 128 distinct targets and fails closed to
+`null` beyond it (null is not a wrong element). See the ADRs
+(`decisions/0002-correlation.md`, `decisions/0003-target.md` in the repository).
 
 ## Browser support
 
@@ -118,7 +141,7 @@ Cold-path methods (`getINP()`, `getInteractions()`, `getLoafs()`) allocate resul
 | Event Timing (`interactionId`) | 96+ | 144+ | -- |
 | LoAF (script attribution) | 123+ | -- | -- |
 
-The library feature-detects both APIs. If Event Timing is unavailable, `supported` returns false and no observers are started. If LoAF is unavailable, INP is still computed but `attribution` is null.
+The library feature-detects both APIs. If Event Timing is unavailable, `supported` returns false and no observers are started. If LoAF is unavailable, INP is still computed and `getINP().attribution` is still an object -- its `loafs[]` is simply empty, while `target` and `phase` are still set. `attribution` is `null` only when there is no interaction, on the `onUpdate` hot-path entry, and after `getINPInto()`.
 
 ## INP calculation
 

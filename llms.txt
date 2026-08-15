@@ -37,6 +37,34 @@ onUpdate(entry) fires on the hot path when a new worst is recorded
 (entry.newWorst) OR the p98 INP candidate changes (entry.inpChanged); the
 entry is reused, attribution is null.
 
+## Attribution (getINP().attribution, since 1.2.0)
+
+getINP().attribution is { loafs, target, phase } (or null):
+
+- loafs: up to 4 long-animation frames that overlap the interaction, each
+  { startTime, duration, blockingDuration, styleAndLayoutStart, scripts }.
+  Correlation rule: overlap is taken against the UNQUANTIZED processing window
+  (processingStart..processingEnd), NOT the 8ms-quantized full duration; ALL
+  overlapping LoAFs are collected up to a cap of 4, earliest-start first (the
+  deterministic tie-break). ADR: decisions/0002-correlation.md at
+  https://github.com/PeshoVurtoleta/lite-inp (repo-only, not published).
+- target: the interned element as "tag#id" / "tag.class" (NOT a CSS selector),
+  or null. Targets are interned via a WeakMap keyed by node identity -- the Node
+  is NEVER stored, so detached subtrees stay collectable (no RUM leak). The map
+  is bounded at 128 distinct targets; beyond the cap, and for a null/removed
+  target, attribution FAILS CLOSED to null -- never a wrong element (null is not
+  zero). ADR: decisions/0003-target.md at
+  https://github.com/PeshoVurtoleta/lite-inp (repo-only, not published).
+- phase: 'presentation' when presentationDelay > processingTime (the paint
+  dominates -- correlation targets the next frame's style/layout segment via
+  styleAndLayoutStart), else 'processing' (the scripts dominate).
+
+The hot path gains exactly one Int32 write per raised-duration event
+(iTargetTag[slot] = internTarget(e.target)): a repeat target is a single
+WeakMap hit at 0 B/op; a genuinely new target builds one string, bounded to
+128 per page view. Attribution objects allocate only in getINP() (cold path).
+The intern map is cleared on a bfcache restore and on destroy().
+
 Lifecycle: a bfcache restore (pageshow with event.persisted) resets INP for
 the new page view; a prerender activationStart offset is applied to reported
 startTimes. Both handled internally, zero config.

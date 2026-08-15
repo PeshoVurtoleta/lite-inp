@@ -263,6 +263,182 @@ export const SCENARIOS = [
     }
 ];
 
+// ===========================================================================
+// IN2 attribution fixtures (v1.2.0)
+// ===========================================================================
+//
+// SYNTHETIC-FIRST, stated plainly (see test/browser/honesty.md). Real LoAF spans
+// of this precision -- "one interaction spanning exactly three frames", "a paint
+// two frames after processing" -- are not drivable in a headless harness. So a
+// page-side PerformanceObserver SHIM captures the observer's real event + LoAF
+// callbacks, and we feed exact, HAND-DERIVED timelines through them. What runs is
+// the REAL shipped correlation code (collectLoafs / pickPhase / buildAttribution)
+// in real Chromium; only the entry TIMESTAMPS are synthetic. This is the same
+// posture as the 1.1.0 bfcache/prerender scenarios.
+
+export const attributionProbe = {};              // name -> { attribution, identical }
+export const churnProbe = { target: undefined, interactionCount: 0, distinct: 0 };
+
+// The page-side fixture driver. Shims PerformanceObserver so a fresh observer's
+// event+loaf callbacks are captured, feeds the hand-crafted LoAFs then the
+// interaction(s), and reads getINP().attribution. Runs `replays` times and
+// reports whether every replay produced byte-identical attribution (JSON).
+function pageFeedFixture(spec) {
+    const RealPO = window.PerformanceObserver;
+    function once() {
+        let evCb = null, loafCb = null;
+        function Shim(cb) { this._cb = cb; }
+        Shim.prototype.observe = function (o) {
+            if (o.type === 'event') evCb = this._cb;
+            else if (o.type === 'long-animation-frame') loafCb = this._cb;
+        };
+        Shim.prototype.disconnect = function () {};
+        Shim.prototype.takeRecords = function () { return []; };
+        Shim.supportedEntryTypes = ['event', 'long-animation-frame'];
+        window.PerformanceObserver = Shim;
+        const obs = window.createInpObserver({ durationThreshold: 16 });
+        window.PerformanceObserver = RealPO;
+
+        // LoAFs first (attribution correlates against the ring), then events.
+        if (loafCb) loafCb({ getEntries: function () { return spec.loafs; } });
+        // Build real (detached) element targets in-page from each event's descriptor.
+        const events = spec.events.map(function (e) {
+            const el = document.createElement(e.tag);
+            if (e.id) el.id = e.id;
+            return {
+                interactionId: e.interactionId, duration: e.duration,
+                startTime: e.startTime, processingStart: e.processingStart,
+                processingEnd: e.processingEnd, name: e.name, target: el
+            };
+        });
+        if (evCb) evCb({ getEntries: function () { return events; } });
+
+        const entry = obs.getINP();
+        const at = entry ? entry.attribution : null;
+        const count = obs.interactionCount;
+        obs.destroy();
+        return { at: at, count: count };
+    }
+    const replays = spec.replays || 3;
+    const jsons = [];
+    let count = 0;
+    for (let i = 0; i < replays; i++) { const r = once(); jsons.push(JSON.stringify(r.at)); count = r.count; }
+    let identical = true;
+    for (let i = 1; i < jsons.length; i++) if (jsons[i] !== jsons[0]) identical = false;
+    return { attribution: JSON.parse(jsons[0]), identical: identical, interactionCount: count };
+}
+
+// The page-side churn driver. 10k interactions, each with a FRESH DOM element
+// appended then removed (real DOM churn), fed as the target through the shim with
+// strictly-rising durations so the WORST is the last (over-cap) element -> its
+// target must fail closed to null. Proves the intern cap holds under churn and
+// the ring stays bounded. Detached RETENTION is measured in control.detached.mjs.
+function pageChurnTargets(n) {
+    const RealPO = window.PerformanceObserver;
+    let evCb = null;
+    function Shim(cb) { this._cb = cb; }
+    Shim.prototype.observe = function (o) { if (o.type === 'event') evCb = this._cb; };
+    Shim.prototype.disconnect = function () {};
+    Shim.prototype.takeRecords = function () { return []; };
+    Shim.supportedEntryTypes = ['event', 'long-animation-frame'];
+    window.PerformanceObserver = Shim;
+    const obs = window.createInpObserver({ durationThreshold: 16 });
+    window.PerformanceObserver = RealPO;
+
+    const feed = { getEntries: null };
+    const box = [null];
+    feed.getEntries = function () { return box; };
+    for (let i = 0; i < n; i++) {
+        const el = document.createElement('button');
+        el.id = 'churn-' + i;
+        document.body.appendChild(el);
+        box[0] = {
+            interactionId: i + 1, duration: 24 + i * 0.01,   // strictly rising -> worst is last
+            startTime: i, processingStart: i + 2, processingEnd: i + 2 + 12,
+            name: 'pointerup', target: el
+        };
+        evCb(feed);
+        document.body.removeChild(el);   // churn: detach immediately
+    }
+    const entry = obs.getINP();
+    const target = entry ? entry.attribution.target : undefined;
+    const interactionCount = obs.interactionCount;
+    obs.destroy();
+    return { target: target, interactionCount: interactionCount, distinct: n };
+}
+
+// Hand-derived fixture specs. Each timeline is chosen so the expected attribution
+// is derivable by hand from the correlation rule (decisions/0002-correlation.md).
+const FIX_PAINT_AFTER = {
+    // Presentation-dominated: processing ends at frame P's end (105..120), the
+    // paint lands in a LATER frame Q (250..290). presentationDelay 180 > 15.
+    // Correlation targets the style/layout segment of the presentation window
+    // [120, 300] -> only Q (P's style segment [110,120] does not overlap [120,..]).
+    loafs: [
+        { startTime: 100, duration: 20, blockingDuration: 0, styleAndLayoutStart: 110, scripts: [] },
+        { startTime: 250, duration: 40, blockingDuration: 0, styleAndLayoutStart: 260,
+          scripts: [{ name: 'paint', sourceURL: 'q.js', sourceFunctionName: 'render', duration: 30 }] }
+    ],
+    events: [
+        { interactionId: 1, duration: 200, startTime: 100, processingStart: 105,
+          processingEnd: 120, name: 'pointerup', tag: 'button', id: 'fixture' }
+    ]
+};
+const FIX_TWO_IN_ONE = {
+    // Two interactions, both processing windows inside ONE LoAF M [100,300].
+    // The worst (dur 90) reports exactly that one LoAF.
+    loafs: [
+        { startTime: 100, duration: 200, blockingDuration: 50, styleAndLayoutStart: 280,
+          scripts: [{ name: 'handler', sourceURL: 'm.js', sourceFunctionName: 'onClick', duration: 80 }] }
+    ],
+    events: [
+        { interactionId: 1, duration: 90, startTime: 110, processingStart: 115,
+          processingEnd: 165, name: 'pointerup', tag: 'button', id: 'fixture' },
+        { interactionId: 2, duration: 60, startTime: 180, processingStart: 185,
+          processingEnd: 230, name: 'pointerup', tag: 'button', id: 'fixture' }
+    ]
+};
+const FIX_SPAN_THREE = {
+    // One interaction whose processing window [120,240] spans three LoAFs
+    // A[100,150] B[150,200] C[200,250] -> exactly 3 filled slots, in start order.
+    loafs: [
+        { startTime: 100, duration: 50, blockingDuration: 10, styleAndLayoutStart: 140,
+          scripts: [{ name: 'a', sourceURL: 'a.js', sourceFunctionName: 'fa', duration: 30 }] },
+        { startTime: 150, duration: 50, blockingDuration: 10, styleAndLayoutStart: 190,
+          scripts: [{ name: 'b', sourceURL: 'b.js', sourceFunctionName: 'fb', duration: 30 }] },
+        { startTime: 200, duration: 50, blockingDuration: 10, styleAndLayoutStart: 240,
+          scripts: [{ name: 'c', sourceURL: 'c.js', sourceFunctionName: 'fc', duration: 30 }] }
+    ],
+    events: [
+        { interactionId: 1, duration: 150, startTime: 100, processingStart: 120,
+          processingEnd: 240, name: 'pointerup', tag: 'button', id: 'fixture' }
+    ]
+};
+
+export const FIXTURE_SCENARIOS = [
+    {
+        name: 'paintAfterProcessing',
+        async run(ctx) { attributionProbe.paintAfterProcessing = await ctx.eval(pageFeedFixture, FIX_PAINT_AFTER); }
+    },
+    {
+        name: 'twoInOneLoaf',
+        async run(ctx) { attributionProbe.twoInOneLoaf = await ctx.eval(pageFeedFixture, FIX_TWO_IN_ONE); }
+    },
+    {
+        name: 'spanThreeLoafs',
+        async run(ctx) { attributionProbe.spanThreeLoafs = await ctx.eval(pageFeedFixture, FIX_SPAN_THREE); }
+    },
+    {
+        name: 'churnTargets',
+        async run(ctx) {
+            const r = await ctx.eval(pageChurnTargets, 10000);
+            churnProbe.target = r.target;
+            churnProbe.interactionCount = r.interactionCount;
+            churnProbe.distinct = r.distinct;
+        }
+    }
+];
+
 // Best-effort real bfcache restore. Non-gating: it must NEVER stall or corrupt
 // the instrumented page. In the about:blank + addScriptTag oracle harness the
 // page is instrumented once (inject is not re-run on navigation) and about:blank

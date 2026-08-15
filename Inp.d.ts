@@ -7,11 +7,39 @@ export interface ScriptAttribution {
     duration: number;
 }
 
-export interface LoafAttribution {
-    loafDuration: number;
-    loafBlockingDuration: number;
-    loafStyleAndLayoutStart: number;
+/** One long-animation frame correlated to the INP interaction. */
+export interface AttributedLoaf {
+    startTime: number;
+    duration: number;
+    blockingDuration: number;
+    styleAndLayoutStart: number;
     scripts: ScriptAttribution[];
+}
+
+/**
+ * Attribution for the current INP interaction (since 1.2.0).
+ *
+ * Correlation rule (see decisions/0002-correlation.md): overlap is taken against
+ * the UNQUANTIZED processing window (`processingStart..processingEnd`), not the
+ * 8ms-quantized full duration. ALL overlapping LoAFs are collected (up to 4),
+ * earliest-start first (the deterministic tie-break), not a single best overlap.
+ * When the interaction is presentation-dominated (`presentationDelay >
+ * processingTime`) correlation targets the style/layout segment of the frame(s)
+ * covering the presentation window instead of the processing scripts.
+ */
+export interface InpAttribution {
+    /** Up to 4 LoAFs overlapping the correlation window, earliest-start first. */
+    loafs: AttributedLoaf[];
+    /**
+     * The interned element target as `tag#id` / `tag.class` (NOT a CSS selector),
+     * or null. Targets are interned through a WeakMap (the Node is never stored,
+     * so detached subtrees stay collectable), bounded at 128 distinct targets;
+     * beyond the cap, and for a null/removed target, attribution FAILS CLOSED to
+     * null -- never a wrong element (null is not zero). See decisions/0003-target.md.
+     */
+    target: string | null;
+    /** Which phase dominated: 'processing' (scripts) or 'presentation' (paint). */
+    phase: 'processing' | 'presentation';
 }
 
 export interface InpEntry {
@@ -29,8 +57,12 @@ export interface InpEntry {
     eventType: string;
     /** Browser-assigned interaction ID. */
     interactionId: number;
-    /** LoAF attribution for the overlapping long animation frame, or null. */
-    attribution: LoafAttribution | null;
+    /**
+     * Correlated attribution (loafs[], element target, phase), or null. Populated
+     * only by `getINP()` (cold path); always null on `onUpdate` entries and after
+     * `getINPInto()`, which stay allocation-free.
+     */
+    attribution: InpAttribution | null;
     /**
      * onUpdate only: true when this entry is a new worst (max) interaction.
      * Absent on entries filled by getINP()/getINPInto().

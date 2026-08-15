@@ -72,6 +72,35 @@ gating scenarios. The seam is the liftable part; real bfcache/prerender fidelity
 is a browser-harness capability, not a library correctness question, and the
 library's reset/offset code paths are fully exercised by the synthetic triggers.
 
+## Attribution fixtures + detached-node counting (1.2.0): synthetic-first
+
+IN2's attribution work is verified in `test/browser/oracle.test.mjs`
+(`attribution (IN2)`) and `test/browser/control.detached.mjs`. Both are
+synthetic-first, disclosed here for the same reason as the lifecycle scenarios.
+
+- **The three attribution fixtures** (`paintAfterProcessing`, `twoInOneLoaf`,
+  `spanThreeLoafs`) feed hand-crafted LoAF + Event-Timing timelines through a
+  page-side `PerformanceObserver` shim that captures the observer's real
+  callbacks. What runs is the REAL shipped correlation code
+  (`collectLoafs`/`pickPhase`/`buildAttribution`) in real Chromium; only the
+  entry TIMESTAMPS are synthetic. Real LoAF spans of this precision -- "one
+  interaction spanning exactly three frames", "a paint two frames after
+  processing" -- are not drivable headless, so the timeline is authored, not
+  measured. Determinism is asserted by replaying each fixture 3x in-page and
+  requiring byte-identical (`JSON.stringify`) attribution.
+
+- **Detached-node retention** (`control.detached.mjs`) is counted by **WeakRef
+  liveness after a forced CDP `HeapProfiler.collectGarbage`**: 10000 elements are
+  created, detached, and referenced only by `WeakRef`; after GC we count how many
+  still `deref()`. This is the HARD, deterministic gate. A real heap-snapshot
+  "detached DOM node" count (`DOM.getDetachedDomNodes` / walking a `HeapSnapshot`)
+  is the exact flaky-headless class IN0 warned about and is **not** relied on --
+  WeakRef liveness answers the only question that matters (did the collector
+  retain the Node?) without a snapshot. The control (which stores `e.target`)
+  retains all 10000; the shipped interned path retains 0 while the observer is
+  still LIVE, which is the point: the WeakMap key is weak, so the retention is
+  gone with or without `destroy()`.
+
 ## Bottom line for a caller
 
 The only allocation you cannot remove is the platform's `getEntries()` array,

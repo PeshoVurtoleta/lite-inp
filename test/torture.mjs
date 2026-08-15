@@ -68,10 +68,24 @@ tracker.registerKernel(createListenerOrphanKernel());
 tracker.registerKernel(createObserverOrphanKernel());
 tracker.registerKernel(createAsyncRetentionKernel());
 
+// A per-cycle target NODE stand-in. Feeding it before the pageshow populates the
+// target intern map (a WeakMap keyed by this node + one interned string), so the
+// bfcache resetState() has a live intern map to clear -- and the WeakMap holding
+// the node WEAKLY (never stored strongly) is why `t` still finalizes to size 0.
+// The node is a fresh literal per cycle and is NEVER captured by the cleanup or
+// tag, so nothing retains it.
+function makeTargetNode(i) { return { tagName: 'BUTTON', id: 'b' + (i & 15) }; }
+
 // ---- phase 1: retention torture ------------------------------------------
 for (let i = 0; i < CYCLES; i++) {
   const dispose = createRoot(() => effect(() => {
     const t = createInpObserver();
+    // Feed one interaction WITH a target so the intern map (WeakMap + string) is
+    // populated before the restore, proving resetState() actually clears it.
+    capturedEventCb({ getEntries: () => [{
+      interactionId: 1, duration: 40, startTime: 0, processingStart: 2,
+      processingEnd: 22, name: 'pointerup', target: makeTargetNode(i)
+    }] });
     // Fire a bfcache pageshow at the live listener(s) this cycle: exercises
     // resetState() on a restore AND proves the listener registered.
     mockWindow.dispatch('pageshow', { persisted: true });
@@ -111,9 +125,16 @@ const gc = new GcProfiler().start();
 // the point.
 const inst = createInpObserver({ onUpdate: function () {} });
 const cb = capturedEventCb;
+// A pool of DISTINCT target nodes larger than the 128 intern cap, reused
+// cyclically. After the first pass every node is either interned (WeakMap hit,
+// zero alloc) or over-cap (sentinel, zero alloc), so the hot path -- including
+// the new iTargetTag[slot] = internTarget(e.target) write -- must hold major=0.
+const TARGET_POOL = 200;
+const targetPool = new Array(TARGET_POOL);
+for (let k = 0; k < TARGET_POOL; k++) targetPool[k] = { tagName: 'DIV', id: 'd' + k };
 const entry = {
   interactionId: 0, duration: 0,
-  startTime: 0, processingStart: 0, processingEnd: 0, name: 'pointerup'
+  startTime: 0, processingStart: 0, processingEnd: 0, name: 'pointerup', target: null
 };
 const arr = [entry];
 const list = { getEntries: () => arr };
@@ -125,6 +146,7 @@ for (let i = 0; i < HOT; i++) {
   entry.startTime = i;
   entry.processingStart = i + 2;
   entry.processingEnd = i + 2 + dur * 0.5;
+  entry.target = targetPool[i % TARGET_POOL];
   cb(list);
   if ((i & 8191) === 0) {
     gc.sampleHeap(performance.now(), process.memoryUsage().heapUsed);

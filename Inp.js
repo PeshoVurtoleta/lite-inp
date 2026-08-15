@@ -1,4 +1,4 @@
-// @zakkster/lite-inp 1.1.0
+// @zakkster/lite-inp 1.2.0
 // Zero-GC INP attribution via Event Timing API + Long Animation Frames.
 // Preallocated struct-of-arrays for interactions and LoAF entries.
 // The observer callbacks write to typed arrays -- no object creation,
@@ -7,7 +7,7 @@
 // Copyright (c) 2026 Zahary Shinikchiev <shinikchiev@yahoo.com>
 // MIT License
 
-export const VERSION = '1.1.0';
+export const VERSION = '1.2.0';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -74,6 +74,7 @@ export function createInpObserver(options) {
     const iProcessingTime = new Float64Array(iCap);
     const iPresentationDelay = new Float64Array(iCap);
     const iEventType = new Int32Array(iCap);  // interned tag id
+    const iTargetTag = new Int32Array(iCap);  // interned target id (-1 = unknown)
     let iCount = 0;
 
     // interaction ID -> slot index (one-time alloc per unique interaction)
@@ -86,6 +87,68 @@ export function createInpObserver(options) {
         let id = eventTypeMap.get(name);
         if (id === undefined) { id = eventTypes.length; eventTypes.push(name); eventTypeMap.set(name, id); }
         return id;
+    }
+
+    // -- target interning (element attribution) --
+    // The Event Timing target is a Node; storing it retains detached subtrees --
+    // the classic RUM leak. So the Node is NEVER stored. A WeakMap keys by node
+    // IDENTITY (weak: a detached element stays collectable), mapping it to a small
+    // integer id; the human-readable string (tag#id / tag.class, NOT a CSS
+    // selector) is built ONCE per distinct target and resolved on the cold path.
+    // Bounded at TARGET_CAP distinct targets: beyond it we fail closed to the
+    // sentinel id (-1) with no allocation and no store -- a wrong element is worse
+    // than no element (null is not zero). See the ADR: decisions/0003-target.md
+    // at https://github.com/PeshoVurtoleta/lite-inp (repo-only, not published).
+    const TARGET_CAP = 128;
+    const TARGET_SENTINEL = -1;
+    const targetStrings = [];
+    let targetMap = typeof WeakMap !== 'undefined' ? new WeakMap() : null;
+    let targetCount = 0;
+
+    // Cold-ish: runs at most TARGET_CAP times per page view (once per distinct
+    // interned target). Builds tag#id when an id is present, else tag.firstClass,
+    // else the bare tag. Fail closed to '' when there is no usable tag name.
+    function describeTarget(node) {
+        const tag = typeof node.tagName === 'string' ? node.tagName.toLowerCase() : '';
+        if (tag === '') return '';
+        const id = node.id;
+        if (typeof id === 'string' && id !== '') return tag + '#' + id;
+        const cls = node.className;
+        if (typeof cls === 'string' && cls !== '') {
+            const sp = cls.indexOf(' ');
+            return tag + '.' + (sp === -1 ? cls : cls.slice(0, sp));
+        }
+        return tag;
+    }
+
+    // HOT PATH. On a repeat target this is a single WeakMap.get (zero alloc). A
+    // genuinely new target (bounded, user-driven) builds one string. A null
+    // target (element removed from the DOM before the entry surfaced) or an
+    // over-cap target fails closed to the sentinel -- never a wrong element.
+    // Fail closed on ANY non-object too: a real Event Timing target is
+    // Element|null, but a primitive would throw at WeakMap.set and abandon the
+    // rest of the observer batch (silent metric loss). typeof null is 'object',
+    // so the explicit null check above still stands; functions are valid WeakMap
+    // keys but never a real target, so failing closed on them is correct.
+    function internTarget(node) {
+        if (targetMap === null || node === null ||
+            (typeof node !== 'object' && typeof node !== 'function')) return TARGET_SENTINEL;
+        const cached = targetMap.get(node);
+        if (cached !== undefined) return cached;
+        if (targetCount >= TARGET_CAP) return TARGET_SENTINEL;
+        const id = targetCount;
+        targetStrings[id] = describeTarget(node);
+        targetMap.set(node, id);
+        targetCount = id + 1;
+        return id;
+    }
+
+    // Cold path: resolve an interned target id back to its string. Fail closed to
+    // null for the sentinel or an empty description (null is not a wrong element).
+    function resolveTarget(id) {
+        if (id < 0 || id >= targetCount) return null;
+        const s = targetStrings[id];
+        return s !== undefined && s !== '' ? s : null;
     }
 
     // -- LoAF SoA (ring buffer) --
@@ -112,6 +175,13 @@ export function createInpObserver(options) {
     // large LoAF; the browser's own scripts array is never mutated.
     let scratchScripts = null;
 
+    // Correlation collects ALL LoAFs overlapping the interaction's processing (or
+    // presentation) window, up to LOAF_MATCH_CAP, into this PREALLOCATED scratch.
+    // It is reused across every buildAttribution call -- only the cold-path
+    // loafs[] array that copies out of it allocates. See collectLoafs.
+    const LOAF_MATCH_CAP = 4;
+    const matchSlots = new Int32Array(LOAF_MATCH_CAP);
+
     // -- longest-N SoA (page-lifetime, sorted by duration DESC) --
     // INP is a page-lifetime percentile, but the recency ring above evicts
     // early interactions once it wraps -- so the worst interaction that the
@@ -129,6 +199,7 @@ export function createInpObserver(options) {
     const lnProcessingTime = new Float64Array(LN_CAP);
     const lnPresentationDelay = new Float64Array(LN_CAP);
     const lnEventType = new Int32Array(LN_CAP);       // interned tag id
+    const lnTargetTag = new Int32Array(LN_CAP);       // interned target id (-1 = unknown)
     const lnInteractionId = new Float64Array(LN_CAP); // ids can be large
     let lnCount = 0;
 
@@ -230,6 +301,7 @@ export function createInpObserver(options) {
                 iProcessingTime[slot] = processingTime;
                 iPresentationDelay[slot] = presentationDelay > 0 ? presentationDelay : 0;
                 iEventType[slot] = internEventType(e.name);
+                iTargetTag[slot] = internTarget(e.target);
 
                 // The recency ring may evict this interaction later, but INP is
                 // a page-lifetime percentile -- so maintain the independent
@@ -284,6 +356,7 @@ export function createInpObserver(options) {
         lnProcessingTime[pos] = iProcessingTime[slot];
         lnPresentationDelay[pos] = iPresentationDelay[slot];
         lnEventType[pos] = iEventType[slot];
+        lnTargetTag[pos] = iTargetTag[slot];
         lnInteractionId[pos] = iInteractionId[slot];
     }
 
@@ -297,6 +370,7 @@ export function createInpObserver(options) {
         t = lnProcessingTime[a]; lnProcessingTime[a] = lnProcessingTime[b]; lnProcessingTime[b] = t;
         t = lnPresentationDelay[a]; lnPresentationDelay[a] = lnPresentationDelay[b]; lnPresentationDelay[b] = t;
         t = lnEventType[a]; lnEventType[a] = lnEventType[b]; lnEventType[b] = t;
+        t = lnTargetTag[a]; lnTargetTag[a] = lnTargetTag[b]; lnTargetTag[b] = t;
         t = lnInteractionId[a]; lnInteractionId[a] = lnInteractionId[b]; lnInteractionId[b] = t;
     }
 
@@ -420,42 +494,82 @@ export function createInpObserver(options) {
     // Attribution -- cold path
     // -----------------------------------------------------------------------
 
-    function findLoafForInteraction(startTime, endTime) {
-        // Find the LoAF entry whose time window overlaps the interaction.
-        let bestSlot = -1;
-        let bestOverlap = 0;
+    // Collect ALL LoAFs whose relevant segment overlaps [winStart, winEnd] into
+    // the preallocated matchSlots scratch, up to LOAF_MATCH_CAP, and return the
+    // count. The ring is walked oldest-first, so lStart is ascending: matches are
+    // collected earliest-first, which IS the stated tie-break, and the first
+    // LOAF_MATCH_CAP overlaps are the earliest ones. When styleSeg is true the
+    // overlap is taken against the LoAF's style/layout segment
+    // ([styleAndLayoutStart, lEnd]) rather than the full frame -- used for
+    // presentation-dominated interactions whose paint lands in style/layout.
+    // See the ADR: decisions/0002-correlation.md at
+    // https://github.com/PeshoVurtoleta/lite-inp (repo-only, not published).
+    function collectLoafs(winStart, winEnd, styleSeg) {
+        let count = 0;
         const n = Math.min(lCount, lCap);
-        for (let k = 0; k < n; k++) {
+        for (let k = 0; k < n && count < LOAF_MATCH_CAP; k++) {
             const slot = (lHead - n + k + lCap) & lMask;
             const lEnd = lStart[slot] + lDuration[slot];
-            const overlapStart = startTime > lStart[slot] ? startTime : lStart[slot];
-            const overlapEnd = endTime < lEnd ? endTime : lEnd;
-            const overlap = overlapEnd - overlapStart;
-            if (overlap > bestOverlap) {
-                bestOverlap = overlap;
-                bestSlot = slot;
-            }
+            const segStart = styleSeg && lStyleStart[slot] > 0 ? lStyleStart[slot] : lStart[slot];
+            const overlapStart = winStart > segStart ? winStart : segStart;
+            const overlapEnd = winEnd < lEnd ? winEnd : lEnd;
+            if (overlapEnd > overlapStart) matchSlots[count++] = slot;
         }
-        return bestSlot;
+        return count;
     }
 
-    function buildAttribution(loafSlot) {
-        if (loafSlot < 0) return null;
-        const base = loafSlot * SCRIPTS_PER_LOAF;
-        const scripts = [];
-        for (let s = 0; s < lScriptCount[loafSlot]; s++) {
-            scripts.push({
+    // Cold path: materialize one LoAF slot into a plain attribution object.
+    function buildLoafObject(slot) {
+        const base = slot * SCRIPTS_PER_LOAF;
+        const sc = lScriptCount[slot];
+        const scripts = new Array(sc);
+        for (let s = 0; s < sc; s++) {
+            scripts[s] = {
                 invoker: lScriptInvoker[base + s],
                 sourceURL: lScriptSourceURL[base + s],
                 sourceFunctionName: lScriptSourceFn[base + s],
                 duration: lScriptDuration[base + s]
-            });
+            };
         }
         return {
-            loafDuration: lDuration[loafSlot],
-            loafBlockingDuration: lBlocking[loafSlot],
-            loafStyleAndLayoutStart: lStyleStart[loafSlot],
+            startTime: lStart[slot],
+            duration: lDuration[slot],
+            blockingDuration: lBlocking[slot],
+            styleAndLayoutStart: lStyleStart[slot],
             scripts: scripts
+        };
+    }
+
+    // Phase classification (cold path). When the presentation delay exceeds the
+    // processing time the interaction is presentation-dominated: its cost is the
+    // paint (style/layout of a later frame), not the handlers. Otherwise it is
+    // processing-dominated: the cost is the scripts. This decides which LoAF
+    // segment buildAttribution correlates against.
+    function pickPhase(idx) {
+        return lnPresentationDelay[idx] > lnProcessingTime[idx] ? 'presentation' : 'processing';
+    }
+
+    // Cold path (getINP): emit up to LOAF_MATCH_CAP overlapping LoAFs, the
+    // interned element target (resolved to a string, or null when unknown), and
+    // the phase. Processing-dominated interactions correlate against the
+    // processing window [processingStart, processingEnd]; presentation-dominated
+    // ones against the style/layout segment of the frame(s) covering the
+    // presentation window [processingEnd, interaction end].
+    function buildAttribution(idx) {
+        const phase = pickPhase(idx);
+        let count;
+        if (phase === 'presentation') {
+            const interEnd = lnStartTime[idx] + lnDuration[idx];
+            count = collectLoafs(lnProcessingEnd[idx], interEnd, true);
+        } else {
+            count = collectLoafs(lnProcessingStart[idx], lnProcessingEnd[idx], false);
+        }
+        const loafs = new Array(count);
+        for (let i = 0; i < count; i++) loafs[i] = buildLoafObject(matchSlots[i]);
+        return {
+            loafs: loafs,
+            target: resolveTarget(lnTargetTag[idx]),
+            phase: phase
         };
     }
 
@@ -489,13 +603,11 @@ export function createInpObserver(options) {
     // Called by getINP(); allocates the returned entry by design.
     function fillEntryFromLongest(target, idx) {
         fillLongestPrimitives(target, idx);
-        // LoAF attribution is still correlated at getINP() time from the stored
-        // startTime/duration window -- so cold-path attribution keeps working.
-        // Correlation runs in raw (un-offset) time to match the LoAF ring's
-        // stored startTimes.
-        const endTime = lnStartTime[idx] + lnDuration[idx];
-        const loafSlot = findLoafForInteraction(lnStartTime[idx], endTime);
-        target.attribution = buildAttribution(loafSlot);
+        // Attribution is correlated at getINP() time against the LoAF ring, in raw
+        // (un-offset) time to match the ring's stored startTimes. buildAttribution
+        // collects all overlapping LoAFs (up to LOAF_MATCH_CAP), the element
+        // target, and the phase.
+        target.attribution = buildAttribution(idx);
     }
 
     // -----------------------------------------------------------------------
@@ -604,6 +716,12 @@ export function createInpObserver(options) {
         inpIdx = 0;
         lastInp = 0;
         icBaseline = (perf !== null && perf.interactionCount) || 0;
+        // Drop the target intern map: a restore is a new page view, and reusing
+        // ids across a fresh WeakMap would mis-resolve a re-clicked element. A
+        // fresh WeakMap also releases the weak node keys immediately.
+        targetMap = typeof WeakMap !== 'undefined' ? new WeakMap() : null;
+        targetStrings.length = 0;
+        targetCount = 0;
     }
 
     // A bfcache restore is a NEW page view: the same document is re-shown, but

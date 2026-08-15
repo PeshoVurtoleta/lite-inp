@@ -1,5 +1,59 @@
 # Changelog
 
+## [1.2.0] - 2026-08-15
+
+### Added
+
+- **Element attribution** -- `getINP().attribution.target` now names the element,
+  as `tag#id` / `tag.class` (NOT a CSS selector). Targets are interned through a
+  WeakMap keyed by node identity, so the Node is **never stored** and detached
+  subtrees stay collectable (no RUM leak). The intern map is bounded at **128
+  distinct targets**; beyond the cap -- and for a null/removed target -- the
+  attribution **fails closed to `null`**, never a wrong element (null is not
+  zero). The hot path gains exactly one `Int32` write per raised-duration event
+  (`iTargetTag[slot] = internTarget(e.target)`); a repeat target is a single
+  WeakMap hit (0 B/op), a genuinely new target builds one string. See
+  `decisions/0003-target.md`.
+- **Multi-LoAF correlation** -- `attribution.loafs[]` now collects ALL long
+  animation frames overlapping the interaction (up to 4), instead of a single
+  best overlap. Overlap is taken against the **unquantized processing window**
+  (`processingStart..processingEnd`), not the 8ms-quantized full duration.
+  Deterministic tie-break: earliest LoAF start. See `decisions/0002-correlation.md`.
+- **Phase-aware attribution** -- `attribution.phase` is `'presentation'` when
+  `presentationDelay > processingTime` (the paint dominates: correlation targets
+  the style/layout segment of the frame(s) covering the presentation window, via
+  `styleAndLayoutStart`) or `'processing'` otherwise (the scripts dominate).
+
+### Changed
+
+- **`attribution` shape (breaking within attribution only).** It was
+  `{ loafDuration, loafBlockingDuration, loafStyleAndLayoutStart, scripts }` for a
+  single LoAF; it is now `{ loafs: AttributedLoaf[], target, phase }`. Each entry
+  in `loafs[]` carries `startTime`/`duration`/`blockingDuration`/
+  `styleAndLayoutStart`/`scripts`. The INP **value** is unchanged -- IN2 touches
+  attribution only; web-vitals parity still holds within 8ms on every scenario.
+- `resetState()` (bfcache restore) and `destroy()` now also clear the target
+  intern map (fresh WeakMap, cleared string table, `targetCount = 0`) so a new
+  page view never mis-resolves a re-clicked element's stale id.
+
+### Internal
+
+- `collectLoafs()` replaces `findLoafForInteraction()`; overlapping LoAFs are
+  collected into a preallocated `matchSlots` scratch (`LOAF_MATCH_CAP = 4`) --
+  only the cold-path `loafs[]` array copied out of it allocates.
+- New `iTargetTag`/`lnTargetTag` `Int32` columns carry the interned target id
+  through the recency ring and the page-lifetime longest-N list.
+- New `test/gc.target.mjs` -- 0 B/op gate over the intern write (200000 entries,
+  512 distinct targets > the 128 cap, so the fail-closed overflow path is
+  exercised), with a store-the-target control the gate flags. Wired into `verify`.
+- New `test/browser/control.detached.mjs` -- the detached-DOM leak control (a
+  variant retaining `e.target`) the lane catches, while the shipped interned path
+  retains 0 detached nodes. Wired into `verify`.
+- Browser lane: `churnTargets` (10k interactions with DOM churn) and three
+  hand-derived attribution fixtures (paint after processing; two interactions in
+  one LoAF; one interaction spanning three LoAFs). The oracle asserts attribution
+  is byte-identical across 3 replays and the 3-LoAF fixture fills exactly 3 slots.
+
 ## [1.1.0] - 2026-08-15
 
 ### Added
