@@ -25,6 +25,7 @@
 import { readFileSync } from 'node:fs';
 import { runScenarios } from './runner.mjs';
 import { installJank, HOTSPOT } from './scenarios.mjs';
+import { sumObserverPath, sumSamples } from './heappath.mjs';
 
 const SKIP = process.env.LITE_NO_BROWSER === '1';
 if (SKIP) {
@@ -113,40 +114,6 @@ function collect(page) {
         const inp = window.__inp.getINP();
         return { inp: inp ? inp.duration : null, count: window.__inp.interactionCount };
     });
-}
-
-// --- profile reducers -----------------------------------------------------
-function sumSamples(profile) {
-    let total = 0;
-    if (profile.samples && profile.samples.length) {
-        for (const s of profile.samples) total += s.size || 0;
-        return total;
-    }
-    return sumSelfSize(profile.head);
-}
-function sumSelfSize(node) {
-    if (!node) return 0;
-    let t = node.selfSize || 0;
-    if (node.children) for (const c of node.children) t += sumSelfSize(c);
-    return t;
-}
-
-// Sum sampled self-size for call frames on the library's callback path (our
-// function names) or the caller's onUpdate. Isolates the observer path from
-// unrelated page/browser allocation.
-const OBSERVER_FRAMES = new Set([
-    'onEventEntry', 'maintainLongest', 'internEventType', 'lnCopyFromSlot',
-    'lnBubbleUp', 'lnSwap', 'fillEntryPrimitives', 'onUpdate'
-]);
-function sumObserverPath(profile) {
-    if (!profile.head) return 0;
-    let total = 0;
-    (function walk(node) {
-        const fn = node.callFrame ? node.callFrame.functionName : '';
-        if (OBSERVER_FRAMES.has(fn)) total += node.selfSize || 0;
-        if (node.children) for (const c of node.children) walk(c);
-    })(profile.head);
-    return total;
 }
 
 // --- run ------------------------------------------------------------------

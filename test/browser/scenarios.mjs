@@ -439,6 +439,69 @@ export const FIXTURE_SCENARIOS = [
     }
 ];
 
+// ===========================================================================
+// IN3 demo scenarios (v1.3.0) -- drive the REAL demo/inp.html
+// ===========================================================================
+//
+// These scenarios load the shipped demo page (via the runner's pageUrl) and tap
+// its real injector buttons, so the SAME code a stranger runs is what the gate
+// measures. Package-agnostic still: nothing here reads lite-inp internals -- it
+// clicks buttons and reads window.__demo (the demo's own repo-only audit seam)
+// and window.__wv (a web-vitals subscriber the demo lane installs in inject).
+
+// name -> { liteInp, webVitals, target } captured per injector, fresh page each.
+export const demoParityProbe = {};
+
+// The four scene-01 injectors, each on its own fresh demo page so web-vitals'
+// page-lifetime INP reflects exactly that injector. captureTarget marks the one
+// whose attribution element the gate asserts (the sync injector button).
+export const DEMO_INJECTORS = [
+    { name: 'inject-sync', id: 'inject-sync', taps: 6, captureTarget: true },
+    { name: 'inject-raf', id: 'inject-raf', taps: 6, captureTarget: false },
+    { name: 'inject-thrash', id: 'inject-thrash', taps: 6, captureTarget: false },
+    { name: 'inject-clean', id: 'inject-clean', taps: 8, captureTarget: false }
+];
+
+// Center-of-button viewport coords for one injector, read once (a layout read in
+// the HARNESS, never in the demo frame loop).
+function injectorCenter(id) {
+    const el = document.getElementById(id);
+    const r = el.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+}
+
+async function tapInjector(ctx, id, n) {
+    const c = await ctx.eval(injectorCenter, id);
+    for (let i = 0; i < n; i++) {
+        await ctx.tap(c.x, c.y);
+        await ctx.frame();
+    }
+    await ctx.wait(400);
+    await ctx.frame();
+}
+
+function demoParityCollect(cfg) {
+    const obs = window.__demo.obs;
+    const inp = obs.getINP();
+    return {
+        liteInp: obs.inp,
+        webVitals: window.__wv,
+        target: (cfg.captureTarget && inp && inp.attribution) ? inp.attribution.target : null,
+        interactionCount: obs.interactionCount
+    };
+}
+
+export const DEMO_SCENARIOS = DEMO_INJECTORS.map(function (inj) {
+    return {
+        name: inj.name,
+        async run(ctx) {
+            await ctx.eval(function () { window.__demo.scene(0); });
+            await tapInjector(ctx, inj.id, inj.taps);
+            demoParityProbe[inj.name] = await ctx.eval(demoParityCollect, inj);
+        }
+    };
+});
+
 // Best-effort real bfcache restore. Non-gating: it must NEVER stall or corrupt
 // the instrumented page. In the about:blank + addScriptTag oracle harness the
 // page is instrumented once (inject is not re-run on navigation) and about:blank

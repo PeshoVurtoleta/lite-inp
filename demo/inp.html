@@ -1,0 +1,657 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>lite-inp 1.3.0 -- the INP playground</title>
+    <style>
+        :root {
+            --bg: #05100a;
+            --bg: oklch(0.16 0.03 165);
+            --panel: #0a1a10;
+            --panel: oklch(0.21 0.035 165);
+            --grid: #1f6f4529;
+            --grid: oklch(0.55 0.11 165 / 0.16);
+            --ink: #7df7c8;
+            --ink: oklch(0.90 0.15 168);
+            --ink-dim: #3f9c78;
+            --ink-dim: oklch(0.68 0.09 168);
+            --ink-faint: #2a6f56;
+            --ink-faint: oklch(0.52 0.06 168);
+            --warn: #ffb454;
+            --warn: oklch(0.82 0.15 68);
+            --bad: #ff6b6b;
+            --bad: oklch(0.68 0.18 25);
+            --good: #7df7c8;
+            --good: oklch(0.90 0.15 168);
+            --edge: #2f5a4e80;
+            --edge: oklch(0.42 0.06 168 / 0.5);
+            --phase-input: #ff9f7f;
+            --phase-input: oklch(0.78 0.14 40);
+            --phase-proc: #4ecdc4;
+            --phase-proc: oklch(0.80 0.12 190);
+            --phase-pres: #bb86fc;
+            --phase-pres: oklch(0.73 0.17 300);
+            --r: 0.5rem;
+            --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+        }
+
+        * { box-sizing: border-box; }
+        html, body { margin: 0; }
+
+        body {
+            background: linear-gradient(transparent 0 calc(1.5rem - 1px), var(--grid) calc(1.5rem - 1px) 1.5rem),
+            linear-gradient(90deg, transparent 0 calc(1.5rem - 1px), var(--grid) calc(1.5rem - 1px) 1.5rem),
+            var(--bg);
+            background-size: 1.5rem 1.5rem;
+            color: var(--ink);
+            font-family: var(--mono);
+            font-size: 0.9rem;
+            line-height: 1.5;
+            padding: 1.5rem;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .wrap { max-width: 62rem; margin: 0 auto; }
+
+        header {
+            border-bottom: 1px solid var(--edge);
+            padding-bottom: 0.9rem;
+            margin-bottom: 1.2rem;
+        }
+
+        h1 { font-size: 1.15rem; margin: 0 0 0.2rem; }
+        h1 .v { color: var(--ink-faint); font-weight: 400; }
+        .sub { color: var(--ink-dim); font-size: 0.82rem; max-width: 48rem; }
+
+        nav { display: flex; gap: 0.4rem; margin-bottom: 1.2rem; flex-wrap: wrap; }
+
+        button {
+            font: inherit;
+            color: var(--bg);
+            background: var(--ink);
+            border: 1px solid var(--ink);
+            border-radius: var(--r);
+            padding: 0.5rem 1rem;
+            cursor: pointer;
+            font-size: 0.82rem;
+        }
+
+        @media (hover: hover) {
+            button:hover { background: var(--ink-dim); border-color: var(--ink-dim); }
+        }
+
+        nav button {
+            background: transparent;
+            color: var(--ink-dim);
+            border-color: var(--edge);
+        }
+
+        nav button.active {
+            background: var(--ink);
+            color: var(--bg);
+            border-color: var(--ink);
+        }
+
+        .btn-slow { background: var(--warn); border-color: var(--warn); }
+        .btn-bad { background: var(--bad); border-color: var(--bad); }
+
+        .card {
+            background: var(--panel);
+            border: 1px solid var(--edge);
+            border-radius: var(--r);
+            padding: 0.9rem 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .card h2 {
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            color: var(--ink-faint);
+            margin: 0 0 0.7rem;
+            font-weight: 600;
+        }
+
+        .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+        @media (max-width: 48rem) { .cols { grid-template-columns: 1fr; } }
+
+        .inp-display { font-size: 2.2rem; font-weight: 700; margin: 0.3rem 0; font-variant-numeric: tabular-nums; }
+        .inp-good { color: var(--good); }
+        .inp-warn { color: var(--warn); }
+        .inp-bad { color: var(--bad); }
+
+        .phase-bar { display: flex; height: 1.6rem; border-radius: 3px; overflow: hidden; margin: 0.5rem 0; }
+        .phase-bar > div {
+            display: flex; align-items: center; justify-content: center;
+            font-size: 0.65rem; color: var(--bg); font-weight: 600; flex: 1;
+            overflow: hidden; white-space: nowrap;
+        }
+        .seg-input { background: var(--phase-input); }
+        .seg-proc { background: var(--phase-proc); }
+        .seg-pres { background: var(--phase-pres); }
+
+        .detail { font-size: 0.76rem; color: var(--ink-dim); line-height: 1.7; white-space: pre-wrap; }
+        .detail b { color: var(--ink); font-weight: 600; }
+
+        .attr-card { border-left: 3px solid var(--warn); padding-left: 0.8rem; }
+        .attr-name { color: var(--warn); font-weight: 700; }
+
+        .injector-row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.6rem; }
+
+        canvas { width: 100%; height: 14rem; display: block; border-radius: var(--r); background: #04160d; background: oklch(0.14 0.03 165); }
+
+        .legend { display: flex; gap: 1rem; font-size: 0.7rem; color: var(--ink-faint); margin-top: 0.5rem; flex-wrap: wrap; }
+        .legend span { display: inline-flex; align-items: center; gap: 0.3rem; }
+        .swatch { width: 0.8rem; height: 0.8rem; border-radius: 2px; display: inline-block; }
+
+        .parity-row { display: flex; gap: 1.5rem; }
+        .parity-cell { flex: 1; text-align: center; }
+        .parity-cell .num { font-size: 2rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+        .parity-cell .who { font-size: 0.7rem; color: var(--ink-faint); text-transform: uppercase; letter-spacing: 0.1em; }
+        .parity-delta { font-size: 0.8rem; color: var(--ink-dim); text-align: center; margin-top: 0.6rem; }
+
+        .toggle-row { display: flex; align-items: center; gap: 0.6rem; margin: 0.8rem 0; }
+        .toggle-row input { width: 1.1rem; height: 1.1rem; }
+        .toggle-row label { font-size: 0.8rem; color: var(--ink-dim); }
+
+        .big-num { font-size: 1.6rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+        .note { color: var(--ink-faint); font-size: 0.72rem; margin-top: 0.8rem; }
+        code { color: var(--ink); background: color-mix(in oklab, var(--ink) 10%, transparent); padding: 0 0.25rem; border-radius: 3px; }
+
+        .unsupported { color: var(--warn); font-size: 0.82rem; padding: 1rem; border: 1px dashed var(--warn); border-radius: var(--r); }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <header>
+        <h1>lite-inp <span class="v">1.3.0 -- the INP playground</span></h1>
+        <p class="sub">
+            You are the workload. Every click is data. Jank your own page, then read
+            your own INP, its phases, and the guilty injector -- with web-vitals
+            agreeing on screen. Zero object creation on the observer's hot path.
+        </p>
+    </header>
+
+    <div id="unsupported" class="unsupported hidden">
+        Event Timing API not supported here. Open in Chrome 96+ / Firefox 144+.
+    </div>
+
+    <nav>
+        <button id="nav-01" class="active">01 &middot; playground</button>
+        <button id="nav-02">02 &middot; timeline</button>
+        <button id="nav-03">03 &middot; parity</button>
+        <button id="nav-04">04 &middot; zero-gc</button>
+    </nav>
+
+    <!-- ================= SCENE 01: PLAYGROUND ================= -->
+    <section id="scene-01">
+        <div class="cols">
+            <div>
+                <div class="card">
+                    <h2>Inject jank</h2>
+                    <p class="detail">Each button drives one real interaction with a different cost shape.</p>
+                    <div class="injector-row">
+                        <button id="inject-sync" class="btn-bad">sync block</button>
+                        <button id="inject-raf" class="btn-slow">rAF chain</button>
+                        <button id="inject-thrash" class="btn-slow">layout thrash</button>
+                        <button id="inject-clean">clean handler</button>
+                    </div>
+                </div>
+                <div class="card">
+                    <h2>Your INP</h2>
+                    <div class="inp-display" id="inp-value">-- ms</div>
+                    <div class="phase-bar">
+                        <div class="seg-input" id="phase-input">input</div>
+                        <div class="seg-proc" id="phase-proc">proc</div>
+                        <div class="seg-pres" id="phase-pres">pres</div>
+                    </div>
+                    <div class="detail" id="phase-detail">Click an injector to record an interaction.</div>
+                </div>
+            </div>
+            <div>
+                <div class="card">
+                    <h2>Attribution -- the guilty injector</h2>
+                    <div class="attr-card">
+                        <div class="detail">element <span class="attr-name" id="attr-target">--</span></div>
+                        <div class="detail">phase <b id="attr-phase">--</b></div>
+                        <div class="detail" id="attr-loaf">no long animation frame correlated yet</div>
+                    </div>
+                    <p class="note">The target is the element that ran the interaction -- this page's own button.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ================= SCENE 02: TIMELINE ================= -->
+    <section id="scene-02" class="hidden">
+        <div class="card">
+            <h2>Interaction / LoAF timeline</h2>
+            <canvas id="timeline-canvas" width="960" height="224"></canvas>
+            <div class="legend">
+                <span><i class="swatch seg-input"></i> input delay</span>
+                <span><i class="swatch seg-proc"></i> processing (handlers)</span>
+                <span><i class="swatch seg-pres"></i> presentation (paint) -- the overlap region</span>
+            </div>
+            <p class="note">
+                Each bar is one interaction on a time axis. The presentation segment is the
+                paint window IN2's correlation rule maps to a later frame's style/layout.
+                Inject on scene 01, then return here.
+            </p>
+        </div>
+    </section>
+
+    <!-- ================= SCENE 03: PARITY ================= -->
+    <section id="scene-03" class="hidden">
+        <div class="card">
+            <h2>Differential oracle -- lite-inp vs web-vitals</h2>
+            <div class="parity-row">
+                <div class="parity-cell">
+                    <div class="num" id="parity-lite">--</div>
+                    <div class="who">lite-inp (silent observer)</div>
+                </div>
+                <div class="parity-cell">
+                    <div class="num" id="parity-wv">--</div>
+                    <div class="who">web-vitals</div>
+                </div>
+            </div>
+            <div class="parity-delta" id="parity-delta">drive interactions on scene 01</div>
+            <p class="note" id="parity-note">
+                web-vitals not loaded. Serve from the package root so
+                <code>../node_modules/web-vitals</code> resolves, or the test lane injects it.
+            </p>
+        </div>
+    </section>
+
+    <!-- ================= SCENE 04: ZERO-GC ================= -->
+    <section id="scene-04" class="hidden">
+        <div class="card">
+            <h2>Zero-GC under an interaction burst</h2>
+            <div class="injector-row">
+                <button id="burst">burst 200 interactions</button>
+            </div>
+            <div class="toggle-row">
+                <input type="checkbox" id="alloc-toggle">
+                <label for="alloc-toggle">allocate in onUpdate (the control -- watch it climb)</label>
+            </div>
+            <div class="detail">observer callbacks fired: <span class="big-num" id="update-count">0</span></div>
+            <div class="detail">onUpdate bytes this burst: <span class="big-num" id="alloc-readout">0 B</span></div>
+            <p class="note">
+                With the toggle off the observer path allocates nothing per interaction.
+                Flip it on and the same burst grows the heap -- the honest floor made visible.
+            </p>
+        </div>
+    </section>
+</div>
+
+<!-- web-vitals iife: resolves when served from the package root; degrades silently otherwise. -->
+<script src="../node_modules/web-vitals/dist/web-vitals.attribution.iife.js"></script>
+<script type="importmap">
+{ "imports": {
+    "@zakkster/lite-inp": "../Inp.js",
+    "@zakkster/lite-layout-profiler": "../node_modules/@zakkster/lite-layout-profiler/LayoutProfiler.js"
+} }
+</script>
+<script type="module">
+    import { createInpObserver } from '@zakkster/lite-inp';
+
+    // ---- cached $ refs (module-init, never per-frame) ----------------------
+    const $inpValue = document.getElementById('inp-value');
+    const $phaseInput = document.getElementById('phase-input');
+    const $phaseProc = document.getElementById('phase-proc');
+    const $phasePres = document.getElementById('phase-pres');
+    const $phaseDetail = document.getElementById('phase-detail');
+    const $attrTarget = document.getElementById('attr-target');
+    const $attrPhase = document.getElementById('attr-phase');
+    const $attrLoaf = document.getElementById('attr-loaf');
+    const $timeline = document.getElementById('timeline-canvas');
+    const $parityLite = document.getElementById('parity-lite');
+    const $parityWv = document.getElementById('parity-wv');
+    const $parityDelta = document.getElementById('parity-delta');
+    const $parityNote = document.getElementById('parity-note');
+    const $updateCount = document.getElementById('update-count');
+    const $allocReadout = document.getElementById('alloc-readout');
+    const $allocToggle = document.getElementById('alloc-toggle');
+    const $unsupported = document.getElementById('unsupported');
+
+    const $scenes = [
+        document.getElementById('scene-01'),
+        document.getElementById('scene-02'),
+        document.getElementById('scene-03'),
+        document.getElementById('scene-04')
+    ];
+    const $navs = [
+        document.getElementById('nav-01'),
+        document.getElementById('nav-02'),
+        document.getElementById('nav-03'),
+        document.getElementById('nav-04')
+    ];
+
+    // ---- preallocated telemetry ring (power-of-2, bitmask index) -----------
+    // 5 Float64 per interaction: startTime, inputDelay, processingTime,
+    // presentationDelay, duration. onUpdate writes here; the rAF flush reads.
+    const RING_SLOTS = 64;           // power of two
+    const RING_MASK = RING_SLOTS - 1;
+    const RING_STRIDE = 5;
+    const ring = new Float64Array(RING_SLOTS * RING_STRIDE);
+    let ringHead = 0;                // in slot units
+    let ringCount = 0;
+
+    // Reusable entry for the zero-alloc getINPInto poll (never re-created).
+    const scratchInp = {
+        duration: 0, inputDelay: 0, processingTime: 0, presentationDelay: 0,
+        startTime: 0, eventType: '', interactionId: 0, attribution: null
+    };
+
+    // ---- precomputed constants / class strings -----------------------------
+    const CLASS_GOOD = 'inp-display inp-good';
+    const CLASS_WARN = 'inp-display inp-warn';
+    const CLASS_BAD = 'inp-display inp-bad';
+    const COL_INPUT = '#ff9f7f';
+    const COL_PROC = '#4ecdc4';
+    const COL_PRES = '#bb86fc';
+    const COL_AXIS = '#2a6f56';
+    // ~10 Hz telemetry throttle. A wall-clock gate, not a raw frame-count mask:
+    // a 6-frame mask assumes 60 fps and yields 20 Hz on a 120 Hz display, so the
+    // honest ~10 Hz guarantee is time-based and refresh-rate independent.
+    const TELEMETRY_MS = 100;
+    // scene-04 control: the deliberately-wrong allocation per onUpdate fire when
+    // the toggle is on. MANY small on-heap objects (not one typed-array block:
+    // a TypedArray backing store is off the JS GC heap and invisible to the
+    // sampling profiler; one big Array backing is charged to an anonymous frame).
+    // Each { v } is an allocation event AT THIS SITE, so the sampler attributes it
+    // to onUpdate, and the count makes the sampled sum converge (law of large
+    // numbers) -- a deterministic climb, not a noisy whole-page delta.
+    const CONTROL_OBJ_COUNT = 16384;
+    const CONTROL_OBJ_BYTES = 32;    // conservative per-object on-heap footprint
+    const CONTROL_ALLOC_BYTES = CONTROL_OBJ_COUNT * CONTROL_OBJ_BYTES;
+
+    // ---- runtime state -----------------------------------------------------
+    let activeScene = 0;             // 0-based
+    let allocOn = false;
+    let allocBytes = 0;
+    let updateCalls = 0;
+    let dirty = false;               // an interaction landed since last flush
+    let telemetryWrites = 0;
+    let frameCount = 0;
+    let lastTelemetry = 0;
+    let wvWired = false;
+    let wvValue = null;
+    let allocSink = null;            // the control's escape hatch
+
+    function ratingClass(dur) {
+        if (dur <= 200) return CLASS_GOOD;
+        if (dur <= 500) return CLASS_WARN;
+        return CLASS_BAD;
+    }
+
+    // ---- observer: the SINGLE hot path -------------------------------------
+    // onUpdate fires on newWorst || inpChanged. STRICTLY zero-alloc on the honest
+    // path: only Float64 stores into the preallocated ring plus a dirty flag. No
+    // string coercion here (setting style.flex to a number allocates a string, so
+    // the phase-bar writes live in the throttled flush, not this hot path). The
+    // allocating control lives behind the toggle -- it is the visible climb.
+    function onUpdate(entry) {
+        updateCalls++;
+        const base = (ringHead & RING_MASK) * RING_STRIDE;
+        ring[base] = entry.startTime;
+        ring[base + 1] = entry.inputDelay;
+        ring[base + 2] = entry.processingTime;
+        ring[base + 3] = entry.presentationDelay;
+        ring[base + 4] = entry.duration;
+        ringHead++;
+        if (ringCount < RING_SLOTS) ringCount++;
+        dirty = true;
+        // The control: many small on-heap objects allocated AT THIS SITE, so the
+        // sampling profiler attributes them to onUpdate. Deterministic climb.
+        if (allocOn) {
+            const s = new Array(CONTROL_OBJ_COUNT);
+            for (let k = 0; k < CONTROL_OBJ_COUNT; k++) s[k] = { v: k };
+            allocSink = s;
+            allocBytes += CONTROL_ALLOC_BYTES;
+        }
+    }
+
+    let obs = null;
+    let observerCount = 0;
+    function makeObserver() {
+        observerCount++;
+        return createInpObserver({ durationThreshold: 16, onUpdate: onUpdate });
+    }
+    obs = makeObserver();
+    if (!obs.supported) $unsupported.classList.remove('hidden');
+
+    // ---- injectors (scene 01): real main-thread work -----------------------
+    function busy(ms) {
+        const end = performance.now() + ms;
+        let x = 0;
+        while (performance.now() < end) x += Math.sqrt(x + 1) * 1.0001;
+        return x;
+    }
+    function rafChain(ms, steps) {
+        const chunk = ms / steps;
+        let left = steps;
+        function tick() { busy(chunk); if (--left > 0) requestAnimationFrame(tick); }
+        requestAnimationFrame(tick);
+    }
+    // The thrash injector is the DEMONSTRATED jank: it forces reflow ON PURPOSE.
+    // It is the workload, not the frame loop, so the frame-loop reflow gate does
+    // not cover it. __layoutExpected wraps it when the profiler is active.
+    function thrash(ms) {
+        const el = $timeline; // any element; the write+read is the point
+        const end = performance.now() + ms;
+        let acc = 0;
+        while (performance.now() < end) {
+            el.style.opacity = (0.9 + (acc & 1) * 0.05);
+            acc += el.offsetHeight; // forced synchronous reflow, on purpose
+        }
+        window.__jankAcc = (window.__jankAcc | 0) + (acc & 1);
+    }
+    function runThrash(ms) {
+        if (window.__layout && typeof window.__layout.expected === 'function') {
+            window.__layout.expected(function () { thrash(ms); });
+        } else {
+            thrash(ms);
+        }
+    }
+
+    // The sync block cost. Dramatic (320 ms) for a human; the browser gate lowers
+    // it via __demo.setInjectorMs so a 600-tap burst stays feasible. Same path.
+    // A ramp band (gate only) makes each tap a strictly-rising new worst within
+    // [syncMs, syncMs+band) so onUpdate fires per interaction -- that is what the
+    // scene-04 allocating control needs to visibly climb.
+    let syncMs = 320;
+    let syncBand = 0;
+    let syncTick = 0;
+    document.getElementById('inject-sync').addEventListener('click', function () {
+        busy(syncBand > 0 ? (syncMs + (syncTick++ % syncBand) * 8) : syncMs);
+    });
+    document.getElementById('inject-raf').addEventListener('click', function () { rafChain(160, 6); });
+    document.getElementById('inject-thrash').addEventListener('click', function () { runThrash(140); });
+    document.getElementById('inject-clean').addEventListener('click', function () { /* clean: no work */ });
+
+    // ---- scene 04 burst ----------------------------------------------------
+    // A burst of DOM-detached synthetic interactions is not honest here (the
+    // observer only counts trusted Event-Timing entries), so the burst button
+    // drives a tight loop of real busy handlers that each raise the worst
+    // duration, exercising onUpdate 200x. It runs synchronously; the readout
+    // reflects onUpdate bytes accumulated during it.
+    document.getElementById('burst').addEventListener('click', function () {
+        for (let i = 0; i < 200; i++) busy(1);
+    });
+    $allocToggle.addEventListener('change', function () { setAlloc($allocToggle.checked); });
+    function setAlloc(on) { allocOn = !!on; allocBytes = 0; $allocToggle.checked = allocOn; }
+
+    // ---- scene switching: toggles .hidden only, zero DOM churn -------------
+    function showScene(n) {
+        if (n < 0 || n > 3 || n === activeScene) { if (n === activeScene) return; }
+        for (let i = 0; i < 4; i++) {
+            if (i === n) { $scenes[i].classList.remove('hidden'); $navs[i].classList.add('active'); }
+            else { $scenes[i].classList.add('hidden'); $navs[i].classList.remove('active'); }
+        }
+        activeScene = n;
+        dirty = true;
+    }
+    $navs[0].addEventListener('click', function () { showScene(0); });
+    $navs[1].addEventListener('click', function () { showScene(1); });
+    $navs[2].addEventListener('click', function () { showScene(2); });
+    $navs[3].addEventListener('click', function () { showScene(3); });
+
+    // ---- web-vitals wiring (scene 03), lazy so a late inject still binds ----
+    function tryWireWebVitals() {
+        if (wvWired || typeof window.webVitals === 'undefined' || !window.webVitals.onINP) return;
+        wvWired = true;
+        window.webVitals.onINP(function (m) { wvValue = m.value; },
+            { reportAllChanges: true, durationThreshold: 16 });
+        $parityNote.textContent = 'both numbers read the same Event-Timing feed at threshold 16 ms.';
+    }
+
+    // ---- canvas timeline (scene 02): draws from the ring, no layout read ----
+    const tctx = $timeline.getContext('2d');
+    const TL_W = $timeline.width;
+    const TL_H = $timeline.height;
+    function drawTimeline() {
+        tctx.clearRect(0, 0, TL_W, TL_H);
+        tctx.strokeStyle = COL_AXIS;
+        tctx.lineWidth = 1;
+        tctx.beginPath(); tctx.moveTo(0, TL_H - 20.5); tctx.lineTo(TL_W, TL_H - 20.5); tctx.stroke();
+        const n = ringCount;
+        if (n === 0) return;
+        // Find the max duration for horizontal scale across the visible ring.
+        let maxDur = 1;
+        for (let k = 0; k < n; k++) {
+            const b = ((ringHead - n + k) & RING_MASK) * RING_STRIDE;
+            const d = ring[b + 4];
+            if (d > maxDur) maxDur = d;
+        }
+        const rowH = (TL_H - 30) / n;
+        const scale = (TL_W - 20) / maxDur;
+        for (let k = 0; k < n; k++) {
+            const b = ((ringHead - n + k) & RING_MASK) * RING_STRIDE;
+            const inD = ring[b + 1], prD = ring[b + 2], psD = ring[b + 3];
+            const y = 6 + k * rowH;
+            const h = rowH * 0.7;
+            let x = 10;
+            const wi = inD * scale;
+            tctx.fillStyle = COL_INPUT; tctx.fillRect(x, y, wi, h); x += wi;
+            const wp = prD * scale;
+            tctx.fillStyle = COL_PROC; tctx.fillRect(x, y, wp, h); x += wp;
+            const ws = psD * scale;
+            // presentation = the overlap/paint region, drawn with a bright edge.
+            tctx.fillStyle = COL_PRES; tctx.fillRect(x, y, ws, h);
+        }
+    }
+
+    // ---- the rAF render loop -----------------------------------------------
+    // ONE loop. Telemetry (textContent + canvas) throttled to ~10 Hz via a
+    // 6-frame counter mask. All DOM operations here are WRITES (textContent,
+    // canvas fill); no layout property is read after a write within the tick.
+    function flush() {
+        telemetryWrites++;
+        tryWireWebVitals();
+
+        // hot readout via the zero-alloc getter.
+        const has = obs.getINPInto(scratchInp);
+        if (has) {
+            const dur = scratchInp.duration | 0;
+            $inpValue.textContent = dur + ' ms';
+            const cls = ratingClass(scratchInp.duration);
+            if ($inpValue.className !== cls) $inpValue.className = cls;
+            const inMs = scratchInp.inputDelay | 0;
+            const prMs = scratchInp.processingTime | 0;
+            const psMs = scratchInp.presentationDelay | 0;
+            $phaseInput.textContent = inMs;
+            $phaseProc.textContent = prMs;
+            $phasePres.textContent = psMs;
+            // phase-bar flex: string coercion happens here at ~10 Hz, never on the
+            // observer hot path. Writes only, no layout read within the tick.
+            const total = scratchInp.inputDelay + scratchInp.processingTime + scratchInp.presentationDelay;
+            if (total > 0) {
+                $phaseInput.style.flex = scratchInp.inputDelay / total * 100 + 0.001;
+                $phaseProc.style.flex = scratchInp.processingTime / total * 100 + 0.001;
+                $phasePres.style.flex = scratchInp.presentationDelay / total * 100 + 0.001;
+            }
+            $phaseDetail.textContent = 'event ' + scratchInp.eventType +
+                '  input ' + inMs + 'ms  proc ' + prMs + 'ms  pres ' + psMs + 'ms';
+            $parityLite.textContent = dur + ' ms';
+        }
+
+        // attribution card (cold path; 10 Hz cadence).
+        if (activeScene === 0 && has) {
+            const full = obs.getINP();
+            if (full && full.attribution) {
+                $attrTarget.textContent = full.attribution.target || '(unknown)';
+                $attrPhase.textContent = full.attribution.phase;
+                const loafs = full.attribution.loafs;
+                if (loafs && loafs.length > 0 && loafs[0].scripts.length > 0) {
+                    const s = loafs[0].scripts[0];
+                    $attrLoaf.textContent = 'LoAF script ' + (s.sourceFunctionName || s.invoker || '(anon)') +
+                        ' (' + Math.round(s.duration) + 'ms)';
+                } else {
+                    $attrLoaf.textContent = 'no LoAF script (processing under one frame)';
+                }
+            }
+        }
+
+        if (activeScene === 1) drawTimeline();
+
+        if (activeScene === 2) {
+            $parityWv.textContent = wvValue === null ? '--' : (Math.round(wvValue) + ' ms');
+            if (has && wvValue !== null) {
+                const d = Math.abs(scratchInp.duration - wvValue);
+                $parityDelta.textContent = 'delta ' + d.toFixed(1) + ' ms';
+            }
+        }
+
+        if (activeScene === 3) {
+            $updateCount.textContent = updateCalls;
+            $allocReadout.textContent = allocBytes >= 1024
+                ? (allocBytes / 1024).toFixed(0) + ' KiB' : allocBytes + ' B';
+        }
+    }
+
+    function loop() {
+        frameCount++;
+        // ~10 Hz wall-clock throttle. The playground (scene 0) flushes only when a
+        // new interaction landed; the live scenes (timeline/parity/zero-gc) refresh
+        // on the throttle so their readouts stay current without new input.
+        const now = performance.now();
+        if (now - lastTelemetry >= TELEMETRY_MS && (dirty || activeScene !== 0)) {
+            lastTelemetry = now;
+            flush();
+            dirty = false;
+        }
+        requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+
+    // ---- test / audit surface (repo-only; demo is never in files[]) --------
+    // Not a public API -- a seam for the browser gates (demo.frame.mjs,
+    // overhead.cdp.mjs) and the #profile layout audit.
+    window.__demo = {
+        get ready() { return true; },
+        get obs() { return obs; },
+        scene: showScene,
+        get telemetryWrites() { return telemetryWrites; },
+        get frameCount() { return frameCount; },
+        get updateCalls() { return updateCalls; },
+        get allocBytes() { return allocBytes; },
+        get observerCount() { return observerCount; },
+        allocOn: setAlloc,
+        get controlAllocBytes() { return CONTROL_ALLOC_BYTES; },
+        wireWebVitals: tryWireWebVitals,
+        setInjectorMs: function (ms, band) { syncMs = ms | 0; syncBand = (band | 0) || 0; syncTick = 0; },
+        get nodeCount() { return document.querySelectorAll('*').length; }
+    };
+
+    // ---- optional forced-reflow audit, dormant unless #profile -------------
+    if (location.hash === '#profile') {
+        import('@zakkster/lite-layout-profiler').then(function (m) {
+            window.__layout = m.createLayoutProfiler({ warnToConsole: true });
+        });
+    }
+</script>
+</body>
+</html>

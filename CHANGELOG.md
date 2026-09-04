@@ -1,5 +1,44 @@
 # Changelog
 
+## [1.3.0] - 2026-09-05
+
+The evaluation kit (IN-05). No hot-path byte changes: `Inp.js` gains only the
+`VERSION` bump to `1.3.0`; `onEventEntry` / `maintainLongest` / `internTarget`
+are untouched. Everything below is cold-path -- docs, the demo, and repo-only
+harness (none of it ships; `files[]` stays the same six entries).
+
+### Added
+
+- **The INP playground demo** (`demo/inp.html`, repo-only). Four scenes: 01
+  PLAYGROUND (sync / rAF / thrash / clean injectors, live `obs.inp`, phase bars,
+  and the attribution card naming the guilty injector element); 02 TIMELINE
+  (interaction phase segments drawn on a time axis, the presentation/paint
+  overlap region per `decisions/0002-correlation.md`); 03 PARITY (web-vitals
+  beside `getINP()`, both numbers live); 04 ZERO-GC (interaction burst with the
+  allocating-`onUpdate` toggle as a control that visibly climbs). Cached `$`
+  refs, a preallocated Float64 telemetry ring, a wall-clock ~10 Hz telemetry
+  throttle, pointer input, oklch + hex fallback. Serve with `npx serve .`.
+- **Demo frame-loop gate** (`test/browser/demo.frame.mjs`). Drives the real demo
+  in Chromium through the existing runner seam and gates what the GC torture run
+  cannot see: 0 forced reflows in the frame loop (lite-layout-profiler), the
+  ~10 Hz telemetry throttle, |lite-inp - web-vitals| <= 8 ms on all four
+  injectors, `attribution.target === 'button#inject-sync'`, a flat demo observer
+  path over a 600-tap burst with the scene-04 toggle climbing as the control, and
+  0 DOM growth / one observer over 100 scene switches.
+- **Overhead gate** (`test/browser/overhead.cdp.mjs`). A no-observer baseline
+  page vs an observed page over an identical trusted-input burst; the end-to-end
+  per-interaction allocation is bounded and fingerprinted.
+- **Callback micro-bench** (`bench/inp.bench.mjs`, `npm run bench`). Node
+  mocked-feed observer-callback cost: ns/entry and bytes/op. Runnable, not a gate.
+- **Suite recipes** (`recipes/`, repo-only) wired against the real published
+  peers, APIs from each peer's `llms.txt`: `hud.mjs` (poll `getINPInto` at 1 Hz
+  into a `@zakkster/lite-hud` channel), `beacon.mjs` (report INP once on hide),
+  `layout.mjs` (cross-reference INP against `@zakkster/lite-layout-profiler`).
+  Exercised in CI by `test/recipes.test.mjs`.
+- **README** rewritten around the differential-oracle parity table (scenario x
+  {lite-inp, web-vitals} x INP) and an allocation honesty table that names the
+  platform `getEntries()` floor.
+
 ## [1.2.1] - 2026-08-31
 
 ### Changed

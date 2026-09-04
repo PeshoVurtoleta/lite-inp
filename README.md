@@ -149,6 +149,54 @@ INP is the p98 of the page's interactions: the worst interaction after skipping 
 
 Because INP is a *page-lifetime* percentile, the library maintains an independent longest-N list -- the 10 longest interactions seen since page load -- separate from the `interactionCap` recency ring. The percentile is computed from that list, so INP stays correct on long-lived pages (SPAs, dashboards) even after thousands of interactions have cycled through and been evicted from the ring. The recency ring is retained for `getInteractions()` detail. The longest-N list is maintained allocation-free on the hot path, and matches the estimator used by CrUX and `web-vitals`.
 
+## Differential oracle: parity with web-vitals
+
+Same number, silent observer. lite-inp and `web-vitals` consume the *same*
+browser Event-Timing feed at the same `durationThreshold`, so any disagreement
+beyond the 8 ms Event-Timing quantization is a real algorithm difference. The
+browser lane (`npm run test:browser`, and the demo's scene 03) runs both side by
+side and asserts `|lite-inp - web-vitals| <= 8 ms` on every scenario -- including
+the ring-wrap catcher, where a recency-only estimator (the pre-1.1 bug) provably
+disagrees by more than 8 ms.
+
+One gated run of the four playground injectors (the gate asserts the 8 ms bound
+on *every* run; absolute values are workload-dependent):
+
+| injector | dominant phase | lite-inp | web-vitals | \|delta\| |
+|----------|----------------|---------:|-----------:|---------:|
+| sync block (320 ms) | processing | 328 ms | 328 ms | 0 ms |
+| rAF chain | presentation | 96 ms | 96 ms | 0 ms |
+| layout thrash | processing | 144 ms | 144 ms | 0 ms |
+| clean handler | -- | none | sub-threshold | agree (both none) |
+
+Scene 01's attribution names the element that ran the interaction -- for the sync
+injector, `attribution.target === 'button#inject-sync'`: the demo's own button.
+
+## Allocation honesty
+
+The observer callback allocates nothing per interaction. The honest floor is the
+platform's own `getEntries()` array -- the browser allocates it, and a sampling
+profiler charges it to whichever JS frame called it. That is the irreducible
+cost of reading the feed, not an object we create.
+
+| path | per-interaction allocation | whose |
+|------|----------------------------|-------|
+| observer callback (`onEventEntry`, `maintainLongest`, interning, longest-N) | **0 B** | ours -- preallocated SoA, no object / `push` / concat |
+| `performance ... getEntries()` array | ~a few dozen bytes / callback | the **platform's** -- the floor |
+| `Map.set(interactionId, slot)` | one entry per **unique** interaction | ours -- user-initiated (clicks/keys), not per frame |
+| `getINP()` + `.attribution` | allocates, by design | ours -- **cold path**, on demand |
+| scene-04 allocating-`onUpdate` (the control) | ~0.5 MiB / fire (16384 small objects) | deliberately wrong -- the demo's visible climb |
+
+Gated: the demo frame-loop's honest observer path sampled **~0 KiB** over a
+600-tap burst (gate floor 12 KiB), while flipping the scene-04 toggle made the
+same burst climb **~300 KiB** on the control's own `onUpdate` frame (measured
+280-340 KiB across eight back-to-back runs, against a derived floor of ~123 KiB)
+-- the control has teeth and the margin is deterministic. The climb is read on
+the control's allocation frame, not the whole-page total (which is high-variance
+sampling noise). The end-to-end overhead lane (`npm run test:overhead`)
+fingerprints a no-observer baseline page against an observed one over an
+identical burst and bounds the per-interaction delta.
+
 ## License
 
 MIT (c) Zahary Shinikchiev

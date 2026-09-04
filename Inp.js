@@ -1,4 +1,4 @@
-// @zakkster/lite-inp 1.2.1
+// @zakkster/lite-inp 1.3.0
 // Zero-GC INP attribution via Event Timing API + Long Animation Frames.
 // Preallocated struct-of-arrays for interactions and LoAF entries.
 // The observer callbacks write to typed arrays -- no object creation,
@@ -7,7 +7,7 @@
 // Copyright (c) 2026 Zahary Shinikchiev <shinikchiev@yahoo.com>
 // MIT License
 
-export const VERSION = '1.2.1';
+export const VERSION = '1.3.0';
 
 // ---------------------------------------------------------------------------
 // Helpers
