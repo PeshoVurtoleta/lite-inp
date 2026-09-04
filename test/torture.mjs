@@ -1,14 +1,24 @@
 // test/torture.mjs -- node --expose-gc test/torture.mjs
+//
+// Phase-1 retention gate is a FINALIZATION AUTHORITY, not a counter trick.
+// Each cycle builds a REAL createInpObserver(), exercises it, destroy()s it,
+// then tracks the observer with lite-leak OUTSIDE any owner and WITHOUT
+// untracking it (cleanup NOOP + numeric tag capture NOTHING, so the observer is
+// held only WEAKLY). After the loop we settle HARD and assert the finalization
+// residual tracker.size() <= RES: an observer that was really released is
+// collected (size--), one that leaked is not.
+//
+// (An earlier version tracked `t` INSIDE a createRoot(effect(...)) owner and
+// asserted size()===0 -- a VACUOUS TAUTOLOGY: lite-leak auto-registers
+// onCleanup(untrack) under an active owner, so size() fell to 0 on owner
+// disposal BY CONSTRUCTION regardless of GC. Empirically, pinning all 4096 real
+// observers still left that gate green. Fixed here to the finalization pattern
+// so the gate FAILS on a retained observer.)
+//
+// RED control: LITE_INP_TORTURE_LEAK=1 pins each tracked observer in a module
+// sink -> residual stays ~CYCLES and BLOWS RES, tripping the gate directly.
 import { GcProfiler, checkNoGc } from '@zakkster/lite-gc-profiler';
-import {
-  createLeakTracker,
-  createOwnerCascadeOrphanKernel,
-  createTimerOrphanKernel,
-  createListenerOrphanKernel,
-  createObserverOrphanKernel,
-  createAsyncRetentionKernel,
-} from '@zakkster/lite-leak';
-import { createRoot, effect } from '@zakkster/lite-signal';
+import { createLeakTracker } from '@zakkster/lite-leak';
 
 // Node has no browser PerformanceObserver with 'event' support, so install a
 // mock BEFORE importing the library. observe() captures the callback the
@@ -54,19 +64,46 @@ const { createInpObserver } = await import('../Inp.js');
 
 const CYCLES = 4096;
 const HOT = 200000;
-const leaks = [];
 const warns = [];
 
+// AUTHORITY residual ceiling. A clean run finalizes to single digits; a real
+// retention leak leaves ~CYCLES observers uncollected.
+const RES = Math.max(16, (CYCLES / 1000) | 0); // 16
+
+// A SHARED cleanup that closes over NOTHING and a numeric tag that closes over
+// nothing: the finalization contract requires the tracker's own cleanup + tag
+// to hold no reference to the target, or the hold is defeated and the harness
+// silently reports clean. NOOP + the integer cycle index satisfy that.
+const NOOP = function () {};
+
+// RED control (LITE_INP_TORTURE_LEAK=1): pin every tracked observer here so it
+// can NEVER be finalized -> tracker.size() stays ~CYCLES and BLOWS RES.
+const LEAK = process.env.LITE_INP_TORTURE_LEAK === '1';
+const __leakSink = [];
+
+// Plain tracker: NO orphan kernels (they flag HELD objects) and NO onLeak (it
+// fires on COLLECTION -- the SUCCESS signal for finalization -- so gating on it
+// would fail a clean baseline). The authority is size() after a hard settle.
 const tracker = createLeakTracker({
   name: 'torture',
-  onLeak: (r) => leaks.push(r.kind + ':' + String(r.tag)),
   onWarning: (w) => warns.push(w.kind + ':' + w.reason),
 });
-tracker.registerKernel(createOwnerCascadeOrphanKernel());
-tracker.registerKernel(createTimerOrphanKernel());
-tracker.registerKernel(createListenerOrphanKernel());
-tracker.registerKernel(createObserverOrphanKernel());
-tracker.registerKernel(createAsyncRetentionKernel());
+
+// The finalization residual is only measurable when gc() can be forced. The
+// package's `npm test` runs this file in a plain `node --test` glob WITHOUT
+// --expose-gc (a smoke run); the AUTHORITATIVE gate is `npm run test:torture`
+// (--expose-gc). Under the smoke run the residual assertion is skipped rather
+// than failed -- see `residualOk` below.
+const HAS_GC = typeof globalThis.gc === 'function';
+
+// Hard settle: run FinalizationRegistry callbacks to ground before size(). gc()
+// is guarded so the no --expose-gc smoke run does not throw.
+async function settleHard() {
+  for (let k = 0; k < 10; k++) {
+    globalThis.gc?.();
+    await new Promise((r) => setTimeout(r, 15));
+  }
+}
 
 // A per-cycle target NODE stand-in. Feeding it before the pageshow populates the
 // target intern map (a WeakMap keyed by this node + one interned string), so the
@@ -77,33 +114,36 @@ tracker.registerKernel(createAsyncRetentionKernel());
 function makeTargetNode(i) { return { tagName: 'BUTTON', id: 'b' + (i & 15) }; }
 
 // ---- phase 1: retention torture ------------------------------------------
+// NO createRoot/effect owner here: track() must run with getOwner() undefined so
+// NO auto-untrack is armed and finalization is the ONLY release path. `t` is a
+// per-cycle const captured by nothing after the iteration ends, so a properly
+// destroyed observer is collectable and its only surviving reference is the
+// tracker's WEAK one.
 for (let i = 0; i < CYCLES; i++) {
-  const dispose = createRoot(() => effect(() => {
-    const t = createInpObserver();
-    // Feed one interaction WITH a target so the intern map (WeakMap + string) is
-    // populated before the restore, proving resetState() actually clears it.
-    capturedEventCb({ getEntries: () => [{
-      interactionId: 1, duration: 40, startTime: 0, processingStart: 2,
-      processingEnd: 22, name: 'pointerup', target: makeTargetNode(i)
-    }] });
-    // Fire a bfcache pageshow at the live listener(s) this cycle: exercises
-    // resetState() on a restore AND proves the listener registered.
-    mockWindow.dispatch('pageshow', { persisted: true });
-    // detach the cleanup: capture destroy (which closes over internals, NOT
-    // the returned object), never `t` itself, so `t` can be finalized.
-    const destroy = t.destroy;
-    tracker.track(t, () => destroy(), 'inp', { audit: true });
-    // Documented teardown: disconnect observers, removeEventListener('pageshow'),
-    // reset state. A global window listener retains the observer's internals
-    // until this runs, so destroy() is the ONLY thing that balances the add --
-    // listenersLive returning to 0 below is that balance, proven 4096x.
-    destroy();
-  }));
-  dispose();
+  const t = createInpObserver();
+  // Feed one interaction WITH a target so the intern map (WeakMap + string) is
+  // populated before the restore, proving resetState() actually clears it.
+  capturedEventCb({ getEntries: () => [{
+    interactionId: 1, duration: 40, startTime: 0, processingStart: 2,
+    processingEnd: 22, name: 'pointerup', target: makeTargetNode(i)
+  }] });
+  // Fire a bfcache pageshow at the live listener(s) this cycle: exercises
+  // resetState() on a restore AND proves the listener registered.
+  mockWindow.dispatch('pageshow', { persisted: true });
+  // Documented teardown: disconnect observers, removeEventListener('pageshow'),
+  // reset state. A global window listener retains the observer's internals until
+  // this runs, so destroy() is the ONLY thing that balances the add --
+  // listenersLive returning to 0 below is that balance, proven 4096x. The
+  // tracker's release is NOT tied to destroy() (NOOP cleanup) -- destroy() runs
+  // for the listener-balance oracle; finalization decides the observer's fate.
+  t.destroy();
+  // AUTHORITY: track the REAL observer OUTSIDE any owner and DON'T untrack it.
+  // NOOP + the numeric tag `i` capture nothing, so `t` is held only WEAKLY.
+  tracker.track(t, NOOP, i);
+  if (LEAK) __leakSink.push(t); // RED control: pin -> can NEVER be finalized.
 }
 
-globalThis.gc?.();
-await new Promise((r) => setTimeout(r, 50));
+await settleHard();
 
 const live = tracker.size();
 const findings = tracker.audit();
@@ -158,11 +198,24 @@ const s = gc.summary();
 const report = checkNoGc(s, { maxMajor: 0, maxPauseMs: 4 });
 gc.stop();
 
-const ok = report.ok && live === 0 && leaks.length === 0 && findings.length === 0 &&
+// AUTHORITY: finalization residual (live <= RES), NOT ===0 -- a straggler or two
+// is noise; a real leak leaves ~CYCLES. Listener-balance and phase-2 alloc gates
+// are the two INDEPENDENT oracles kept intact alongside it.
+// residual is only meaningful with a forced gc(); the plain smoke run skips it
+// (the alloc, listener-balance and findings oracles still gate there).
+const residualOk = HAS_GC ? (live <= RES) : true;
+const ok = report.ok && residualOk && findings.length === 0 &&
   listenersLive === 0;
+// Read __leakSink AFTER the settle so V8 cannot elide it under this module's
+// top-level await: the read keeps the sink (and every observer it pins under
+// LITE_INP_TORTURE_LEAK=1) reachable ACROSS settleHard(), which is what makes
+// the RED control actually retain -- without this, a never-read module sink is
+// treated as dead and the pinned observers are collected anyway (size -> 0).
 console.log(
-  'GATE leak=size ' + live + '/0 findings=' + findings.length +
+  'GATE residual size=' + live + '/' + RES + (HAS_GC ? '' : ' [skipped: run test:torture]') +
+  ' findings=' + findings.length +
   ' warnings=' + warns.length + ' listeners=' + listenersLive +
+  ' pinned=' + __leakSink.length +
   ' | gc major=' + s.gc.major + ' minor=' + s.gc.minor +
   ' maxMs=' + s.gc.maxMs.toFixed(2) +
   ' | ' + (ok ? 'ok' : 'FAIL')
@@ -171,10 +224,11 @@ if (!ok) {
   for (const v of report.violations) {
     console.error('  violation ' + v.metric + ' limit=' + v.limit + ' actual=' + v.actual);
   }
+  if (HAS_GC && live > RES) console.error('  AUTHORITY residual size()=' + live + ' > ' + RES +
+    ' -- an observer outlived its destroy()');
   if (listenersLive !== 0) console.error('  leak listeners:' + listenersLive +
     ' (window pageshow=' + mockWindow.liveCount() +
     ' document prerenderingchange=' + mockDocument.liveCount() + ') not removed');
   for (const f of findings) console.error('  finding ' + f.kind + ':' + f.reason);
-  for (const l of leaks) console.error('  leak ' + l);
   process.exitCode = 1;
 }

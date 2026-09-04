@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.2.1] - 2026-08-31
+
+### Changed
+
+- Phase-1 retention gate in `test/torture.mjs` converted to the
+  finalization-authority pattern. It previously tracked the observer inside a
+  `createRoot`/effect owner, so dispose auto-untracked it -- a vacuous variant-2
+  tautology. It now tracks the real observer OUTSIDE any owner, with no untrack,
+  a hard settle, and a residual bound of `RES = 16`. The independent
+  listener-balance and phase-2 allocation oracles are unchanged. Library source
+  (`Inp.js`) is not touched by this release.
+
+### Added
+
+- `LITE_INP_TORTURE_LEAK=1` control in `test/torture.mjs` that pins observers to
+  force the retention gate RED (residual ~4096), proving the gate is not vacuous.
+
 ## [1.2.0] - 2026-08-15
 
 ### Added

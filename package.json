@@ -1,6 +1,6 @@
 {
   "name": "@zakkster/lite-inp",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "author": "Zahary Shinikchiev <shinikchiev@yahoo.com>",
   "description": "Zero-GC INP attribution via Event Timing API + Long Animation Frames. Preallocated struct-of-arrays for interactions and LoAF entries. The observer callbacks write to typed arrays, not objects.",
   "type": "module",
