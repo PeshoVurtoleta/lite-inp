@@ -23,6 +23,7 @@ import { join } from 'node:path';
 import { sumSamples, sumObserverPath, OBSERVER_FRAMES, DEMO_OBSERVER_FRAMES }
     from './browser/heappath.mjs';
 import { startStaticServer } from './browser/serve.mjs';
+import { runScenarios } from './browser/runner.mjs';
 
 // ===========================================================================
 // Shared mocks (same pattern as test/recipes.test.mjs / test/torture.mjs)
@@ -547,4 +548,78 @@ test('serve.mjs: duplicate close() does not throw (duplicate dispose)', async ()
     const srv = await startStaticServer(tmpRoot);
     await srv.close();
     await assert.doesNotReject(() => srv.close());
+});
+
+// ===========================================================================
+// test/browser/runner.mjs -- runScenarios' new `browserType` seam (1.3.1).
+// ONLY the synchronous-before-launch validation is Node-visible without an
+// actual browser: `inject`/`collect` typeof checks and the browserType
+// allowlist all run and reject/throw BEFORE `engine.launch()` is ever awaited
+// (see runner.mjs: the checks precede `const browser = await engine.launch`).
+// Every case below asserts a rejection so no Chromium/Firefox process is ever
+// spawned in the plain `node:test` lane -- this locks the fail-closed CONTRACT
+// of the seam, not its browser-dependent behavior (that is firefox.test.mjs's
+// job). Falsy browserType values (undefined, null, '', 0, NaN, false) are
+// intentionally NOT covered here: `config.browserType || 'chromium'` treats
+// them all as "default to chromium" and would actually launch a browser --
+// out of scope for this Node-only boundary suite.
+// ===========================================================================
+
+const NOOP_ASYNC = async () => {};
+
+test('runner.mjs: browserType outside the allowlist rejects before any browser launches', async () => {
+    await assert.rejects(
+        () => runScenarios({ inject: NOOP_ASYNC, collect: NOOP_ASYNC, scenarios: [], browserType: 'safari' }),
+        /browserType must be 'chromium' or 'firefox', got safari/
+    );
+});
+
+test('runner.mjs ADVERSARIAL: browserType is case-sensitive ("Chromium" !== "chromium")', async () => {
+    await assert.rejects(
+        () => runScenarios({ inject: NOOP_ASYNC, collect: NOOP_ASYNC, scenarios: [], browserType: 'Chromium' }),
+        /browserType must be 'chromium' or 'firefox', got Chromium/
+    );
+});
+
+test('runner.mjs ADVERSARIAL: trailing whitespace on an otherwise-valid browserType is rejected, not trimmed', async () => {
+    await assert.rejects(
+        () => runScenarios({ inject: NOOP_ASYNC, collect: NOOP_ASYNC, scenarios: [], browserType: 'firefox ' }),
+        /browserType must be 'chromium' or 'firefox', got firefox /
+    );
+});
+
+test('runner.mjs ADVERSARIAL: a non-string truthy browserType (type confusion) is rejected, not silently coerced', async () => {
+    // A plain object is truthy, so `config.browserType || 'chromium'` does NOT
+    // default it away -- the strict !== allowlist check must still catch it,
+    // proving the seam does not just duck-type on truthiness.
+    await assert.rejects(
+        () => runScenarios({ inject: NOOP_ASYNC, collect: NOOP_ASYNC, scenarios: [], browserType: { toString: () => 'chromium' } }),
+        /browserType must be 'chromium' or 'firefox'/
+    );
+    await assert.rejects(
+        () => runScenarios({ inject: NOOP_ASYNC, collect: NOOP_ASYNC, scenarios: [], browserType: 1 }),
+        /browserType must be 'chromium' or 'firefox', got 1/
+    );
+});
+
+test('runner.mjs: missing inject rejects fail-closed before browserType is even consulted', async () => {
+    await assert.rejects(
+        () => runScenarios({ collect: NOOP_ASYNC, scenarios: [] }),
+        /runScenarios: inject must be a function/
+    );
+    await assert.rejects(
+        () => runScenarios({ inject: null, collect: NOOP_ASYNC, scenarios: [] }),
+        /runScenarios: inject must be a function/
+    );
+    await assert.rejects(
+        () => runScenarios({ inject: 'not-a-function', collect: NOOP_ASYNC, scenarios: [] }),
+        /runScenarios: inject must be a function/
+    );
+});
+
+test('runner.mjs: missing collect rejects fail-closed', async () => {
+    await assert.rejects(
+        () => runScenarios({ inject: NOOP_ASYNC, scenarios: [] }),
+        /runScenarios: collect must be a function/
+    );
 });

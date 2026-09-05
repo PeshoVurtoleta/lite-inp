@@ -1,5 +1,45 @@
 # Changelog
 
+## [1.3.1] - 2026-09-05
+
+The Firefox lane (DEFERRED trigger met: Playwright 1.62.1 bundles Firefox 153.0,
+which exposes Event Timing with `interactionId`). No hot-path byte changes:
+`Inp.js` gains only the `VERSION` bump to `1.3.1`; the observer callbacks are
+untouched. Everything below is cold-path -- repo-only harness and docs (none of
+it ships; `files[]` stays the same six entries).
+
+### Added
+
+- **Firefox lane** (`test/browser/firefox.test.mjs`, repo-only; `npm run
+  test:browser-ff`). Runs the full differential corpus in real Firefox 153 and
+  gates three things CDP is not needed for: parity (`|lite-inp - web-vitals| <=
+  8 ms` on every scenario including the ring-wrap catcher, with the v1.0.0
+  recency-only control still diverging on wrap600 -- `web-vitals` runs under
+  Playwright Firefox, so the oracle is real there); graceful degradation
+  (`loafSupported === false`, `attribution !== null`, `attribution.loafs.length
+  === 0`, and `attribution.target` a non-null `"tag#id"` string -- element and
+  phase attribution work, script/LoAF attribution is absent); and interaction
+  grouping (N discrete taps -> `interactionCount === N`, mousedown/mouseup id 0
+  never counted). `LITE_NO_BROWSER=1` skips it loudly; a missing Firefox binary
+  is a loud failure, never a silent pass.
+- **`npm run verify:all`** -- `verify` plus the Firefox lane. `verify` itself
+  stays Chromium-only (no Firefox binary is guaranteed in every environment).
+
+### Changed
+
+- **Runner CDP-optional seam** (`test/browser/runner.mjs`, repo-only). The
+  liftable scenario runner gains a `browserType` config (`'chromium'` default |
+  `'firefox'`). Under Firefox there is no CDP: `ctx.cdp` is `null`, the CDP-only
+  calls (`newCDPSession`, `Input.setIgnoreInputEvents`, `cdp.detach`) are
+  skipped, and `ctx.tap` falls back to `page.mouse` (still trusted input, so
+  `interactionId` still increments). The CDP HeapProfiler allocation gate stays
+  Chromium-only by construction.
+- **README "Browser support"** turned from a claimed Firefox row into a tested
+  one: the measured FF-153 attribution story (INP measurable, element `target`
+  and `phase` present, script/LoAF absent -- `attribution` non-null, never
+  `null`), and the note that the allocation gate is Chromium-only (Firefox
+  speaks Juggler, not CDP).
+
 ## [1.3.0] - 2026-09-05
 
 The evaluation kit (IN-05). No hot-path byte changes: `Inp.js` gains only the

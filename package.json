@@ -1,6 +1,6 @@
 {
   "name": "@zakkster/lite-inp",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "author": "Zahary Shinikchiev <shinikchiev@yahoo.com>",
   "description": "Zero-GC INP attribution via Event Timing API + Long Animation Frames. Preallocated struct-of-arrays for interactions and LoAF entries. The observer callbacks write to typed arrays, not objects.",
   "type": "module",
@@ -32,13 +32,15 @@
     "test:gc-getters": "node --expose-gc test/gc.getters.mjs",
     "test:gc-target": "node --expose-gc test/gc.target.mjs",
     "test:browser": "node --test test/browser/oracle.test.mjs",
+    "test:browser-ff": "node --test test/browser/firefox.test.mjs",
     "test:alloc": "node test/browser/alloc.cdp.mjs",
     "test:detached": "node test/browser/control.detached.mjs",
     "test:recipes": "node --test test/recipes.test.mjs",
     "test:demo-frame": "node test/browser/demo.frame.mjs",
     "test:overhead": "node test/browser/overhead.cdp.mjs",
     "bench": "node --expose-gc bench/inp.bench.mjs",
-    "verify": "npm run test:node && npm run test:recipes && npm run test:torture && npm run test:gc-longest && npm run test:gc-getters && npm run test:gc-target && npm run test:browser && npm run test:alloc && npm run test:detached && npm run test:overhead && npm run test:demo-frame"
+    "verify": "npm run test:node && npm run test:recipes && npm run test:torture && npm run test:gc-longest && npm run test:gc-getters && npm run test:gc-target && npm run test:browser && npm run test:alloc && npm run test:detached && npm run test:overhead && npm run test:demo-frame",
+    "verify:all": "npm run verify && npm run test:browser-ff"
   },
   "keywords": [
     "inp",

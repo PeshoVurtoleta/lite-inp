@@ -143,6 +143,15 @@ leak); the intern map is bounded at 128 distinct targets and fails closed to
 
 The library feature-detects both APIs. If Event Timing is unavailable, `supported` returns false and no observers are started. If LoAF is unavailable, INP is still computed and `getINP().attribution` is still an object -- its `loafs[]` is simply empty, while `target` and `phase` are still set. `attribution` is `null` only when there is no interaction, on the `onUpdate` hot-path entry, and after `getINPInto()`.
 
+**Firefox is tested, not just claimed.** A repo-only lane (`npm run test:browser-ff`) drives the full differential corpus in real **Firefox 153.0** (Playwright's bundled build) and measures the degraded-attribution story exactly:
+
+- INP is measurable and agrees with `web-vitals` within the 8 ms Event-Timing quantization on every scenario, wrap-ring included -- `web-vitals` runs under Firefox too, so the differential oracle is real there.
+- `loafSupported === false`: `long-animation-frame` is absent from `supportedEntryTypes`, so there is **no script/LoAF attribution** (`attribution.loafs` is empty).
+- Element attribution **works**: `PerformanceEventTiming.target` is exposed, so `attribution.target` resolves to a `"tag#id"` string (measured `div#hotspot`).
+- `attribution.phase` (processing vs presentation) is computed from the Event-Timing entry timings alone, so it works without LoAF.
+
+So the Firefox story is: **INP measurable, element `target` and `phase` attribution present, script/LoAF attribution absent (empty `loafs`)** -- `attribution` is a non-null object, never `null`. The allocation gate is **Chromium-only**: it rides CDP's `HeapProfiler`, and Firefox speaks Juggler rather than the Chrome DevTools Protocol, so there is no HeapProfiler seam to sample there. The Firefox lane is a correctness/parity + graceful-degradation gate; it is not part of `verify` (no Firefox binary is guaranteed in every environment) -- run it via `npm run verify:all`.
+
 ## INP calculation
 
 INP is the p98 of the page's interactions: the worst interaction after skipping the `floor(interactionCount / 50)` slowest, or simply the worst for pages with fewer than 50 interactions. `performance.interactionCount` (when available) supplies the skip count, matching the spec definition.

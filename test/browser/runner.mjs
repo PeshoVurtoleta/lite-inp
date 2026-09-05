@@ -4,14 +4,31 @@
 // =================================================================
 // Package-agnostic Playwright driver for observability harnesses. NOTHING in
 // this file's signature or body is lite-inp specific: it launches a real
-// Chromium, opens one fresh page per scenario, lets the CALLER instrument the
+// browser, opens one fresh page per scenario, lets the CALLER instrument the
 // page (`inject`), lets each SCENARIO drive real trusted input (`run`), then
 // lets the caller read a JSON snapshot (`collect`). The rest of the
 // observability suite (LCP, CLS, long-task, ...) reuses it verbatim.
 //
+// CDP-OPTIONAL CONTRACT
+// ---------------------
+// The default engine is Chromium, which exposes CDP -- so ctx.cdp is a live
+// CDP session and ctx.tap dispatches trusted input through Input.dispatchMouse-
+// Event. When config.browserType is 'firefox' there is NO CDP (Firefox speaks
+// Juggler, not the Chrome DevTools Protocol): ctx.cdp is null, every CDP-only
+// call (newCDPSession, Input.setIgnoreInputEvents, cdp.detach) is skipped, and
+// ctx.tap falls back to page.mouse.move/down/up -- still TRUSTED input under
+// Playwright, so interactionId still increments. Any CDP-dependent gate (the
+// HeapProfiler allocation lane) is therefore Chromium-only by construction and
+// must NOT run under a null-cdp engine.
+//
 // SEAM CONTRACT
 // -------------
-// runScenarios({ pageUrl, inject, scenarios, collect, options }) -> Promise<Result[]>
+// runScenarios({ pageUrl, inject, scenarios, collect, options, browserType })
+//   -> Promise<Result[]>
+//
+//   browserType 'chromium' (default) | 'firefox'
+//             Selects the Playwright engine. 'firefox' runs the CDP-optional
+//             path above; ctx.cdp is null and no CDP call is issued.
 //
 //   pageUrl   string
 //             URL each scenario page navigates to before instrumentation.
@@ -42,12 +59,15 @@
 //
 // ctx (handed to inject, run, collect) -- generic browser primitives only:
 //   ctx.page              Playwright Page.
-//   ctx.cdp               Attached CDP session (Chrome DevTools Protocol).
-//   ctx.tap(x, y)         Dispatch ONE trusted left click at viewport (x,y) via
-//                         CDP Input.dispatchMouseEvent (move+press+release).
-//                         Trusted input is what makes interactionId increment --
-//                         synthetic element.click() does NOT. Resolves after the
-//                         browser has dispatched (handlers have run).
+//   ctx.cdp               Attached CDP session (Chrome DevTools Protocol), or
+//                         null under a non-Chromium engine (see CDP-OPTIONAL).
+//   ctx.tap(x, y)         Dispatch ONE trusted left click at viewport (x,y):
+//                         via CDP Input.dispatchMouseEvent (move+press+release)
+//                         under Chromium, or page.mouse.move/down/up when cdp is
+//                         null. Both are TRUSTED input, which is what makes
+//                         interactionId increment -- synthetic element.click()
+//                         does NOT. Resolves after the browser has dispatched
+//                         (handlers have run).
 //   ctx.frame()           Await two rAFs (one painted frame boundary).
 //   ctx.wait(ms)          Await ms of wall time in the page.
 //   ctx.eval(fn, ...args) page.evaluate passthrough.
@@ -60,7 +80,7 @@
 // wrong file.
 // =================================================================
 
-import { chromium } from 'playwright';
+import { chromium, firefox } from 'playwright';
 
 export async function runScenarios(config) {
     const pageUrl = config.pageUrl || 'about:blank';
@@ -72,18 +92,29 @@ export async function runScenarios(config) {
     const headless = options.headless !== false;
     const viewport = options.viewport || { width: 800, height: 600 };
     const onLog = typeof options.onLog === 'function' ? options.onLog : function () {};
+    const browserType = config.browserType || 'chromium';
 
     if (typeof inject !== 'function') throw new Error('runScenarios: inject must be a function');
     if (typeof collect !== 'function') throw new Error('runScenarios: collect must be a function');
+    if (browserType !== 'chromium' && browserType !== 'firefox')
+        throw new Error("runScenarios: browserType must be 'chromium' or 'firefox', got " + browserType);
 
-    const browser = await chromium.launch({ headless: headless });
+    const isChromium = browserType === 'chromium';
+    const engine = isChromium ? chromium : firefox;
+
+    const browser = await engine.launch({ headless: headless });
     const results = [];
     try {
         for (let i = 0; i < scenarios.length; i++) {
             const scenario = scenarios[i];
             const page = await browser.newPage({ viewport: viewport });
-            const cdp = await page.context().newCDPSession(page);
-            await cdp.send('Input.setIgnoreInputEvents', { ignore: false }).catch(function () {});
+            // CDP is Chromium-only. Under Firefox there is no CDP session:
+            // cdp stays null and ctx.tap falls back to page.mouse (see makeCtx).
+            let cdp = null;
+            if (isChromium) {
+                cdp = await page.context().newCDPSession(page);
+                await cdp.send('Input.setIgnoreInputEvents', { ignore: false }).catch(function () {});
+            }
 
             if (routes !== null) await registerRoutes(page, routes);
 
@@ -97,7 +128,7 @@ export async function runScenarios(config) {
             onLog('scenario ' + scenario.name + ': collected');
             results.push({ name: scenario.name, snapshot: snapshot });
 
-            await cdp.detach().catch(function () {});
+            if (cdp !== null) await cdp.detach().catch(function () {});
             await page.close();
         }
     } finally {
@@ -108,6 +139,15 @@ export async function runScenarios(config) {
 
 function makeCtx(page, cdp, onLog) {
     async function tap(x, y) {
+        // cdp === null (Firefox): fall back to Playwright's trusted mouse input.
+        // page.mouse.move/down/up is a real pointerdown+pointerup+click sharing
+        // one interactionId, exactly as Input.dispatchMouseEvent is under CDP.
+        if (cdp === null) {
+            await page.mouse.move(x, y);
+            await page.mouse.down();
+            await page.mouse.up();
+            return;
+        }
         await cdp.send('Input.dispatchMouseEvent', {
             type: 'mouseMoved', x: x, y: y, button: 'none', buttons: 0
         });
